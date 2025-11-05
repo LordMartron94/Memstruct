@@ -46,11 +46,11 @@ type Array[T any] struct {
 // Ensure the address is properly aligned and has the right size.
 //
 // ⚠️ capacity is in elements, not bytes.
-func ArrayInitializeAt[T any](arrayAddr memcore.Pointer, capacity uint64) {
+func ArrayInitializeAt[T any](arrayAddr memcore.MarkRaw, capacity uint64) {
 	headerSize := memcore.SizeOf[Array[T]]()
 
 	itemSize := memcore.SizeOf[T]()
-	arrayPtr := memcore.MemcorePointerDereferenceObjectUnsafe[Array[T]](arrayAddr)
+	arrayPtr := memcore.MemcoreMarkDereferenceObject[Array[T]](arrayAddr)
 	*arrayPtr = Array[T]{
 		dataAddrOffset:  uintptr(headerSize),
 		capacity:        capacity,
@@ -61,13 +61,13 @@ func ArrayInitializeAt[T any](arrayAddr memcore.Pointer, capacity uint64) {
 	if itemSize > arrayMemmoveThreshold {
 		arrayPtr.setFnID = memcore.MemcoreFunctionRegisterTyped[setFn[T]](
 			func(i uint64, v T) {
-				setByMove(arrayPtr, memcore.MemcorePointerDereferenceRaw(arrayAddr), i, v)
+				setByMove(arrayPtr, memcore.MemcoreMarkDereference(arrayAddr), i, v)
 			},
 		)
 	} else {
 		arrayPtr.setFnID = memcore.MemcoreFunctionRegisterTyped[setFn[T]](
 			func(i uint64, v T) {
-				setByAssign(arrayPtr, memcore.MemcorePointerDereferenceRaw(arrayAddr), i, v)
+				setByAssign(arrayPtr, memcore.MemcoreMarkDereference(arrayAddr), i, v)
 			},
 		)
 	}
@@ -76,12 +76,12 @@ func ArrayInitializeAt[T any](arrayAddr memcore.Pointer, capacity uint64) {
 // ArraySnapshotCreate creates a deep copy of an array at a new memory location
 // defined by the destination pointer (which points to the start of the new array header).
 // It copies both the header and the data that follow it, maintaining the same relative layout.
-func ArraySnapshotCreate[T any](dest memcore.Pointer, instance memcore.Pointer) memcore.Pointer {
-	arrayPtr := memcore.MemcorePointerDereferenceObjectUnsafe[Array[T]](instance)
+func ArraySnapshotCreate[T any](dest memcore.MarkRaw, instance memcore.MarkRaw) memcore.MarkRaw {
+	arrayPtr := memcore.MemcoreMarkDereferenceObject[Array[T]](instance)
 	totalSize := ArrayRequiredBytesGet[T](arrayPtr.capacity)
 
-	srcAddr := memcore.MemcorePointerDereferenceRaw(instance)
-	dstAddr := memcore.MemcorePointerDereferenceRaw(dest)
+	srcAddr := memcore.MemcoreMarkDereference(instance)
+	dstAddr := memcore.MemcoreMarkDereference(dest)
 
 	memcore.MemoryMoveNoHeapPointers(dstAddr, srcAddr, uintptr(totalSize))
 
@@ -91,9 +91,9 @@ func ArraySnapshotCreate[T any](dest memcore.Pointer, instance memcore.Pointer) 
 // ArraySnapshotRestore replaces the entire memory block of one array
 // (header + data) with that of another array of the same type and capacity.
 // Both arrays must live in manual memory managed by memcore.
-func ArraySnapshotRestore[T any](dest, src memcore.Pointer) error {
-	dstHeader := memcore.MemcorePointerDereferenceObjectUnsafe[Array[T]](dest)
-	srcHeader := memcore.MemcorePointerDereferenceObjectUnsafe[Array[T]](src)
+func ArraySnapshotRestore[T any](dest, src memcore.MarkRaw) error {
+	dstHeader := memcore.MemcoreMarkDereferenceObject[Array[T]](dest)
+	srcHeader := memcore.MemcoreMarkDereferenceObject[Array[T]](src)
 
 	if dstHeader.capacity != srcHeader.capacity {
 		return fmt.Errorf("cannot restore snapshot: unequal capacities (dest=%v, src=%v)", dstHeader.capacity, srcHeader.capacity)
@@ -105,8 +105,8 @@ func ArraySnapshotRestore[T any](dest, src memcore.Pointer) error {
 
 	totalBytes := ArrayRequiredBytesGet[T](dstHeader.capacity)
 
-	dstAddr := memcore.MemcorePointerDereferenceRaw(dest)
-	srcAddr := memcore.MemcorePointerDereferenceRaw(src)
+	dstAddr := memcore.MemcoreMarkDereference(dest)
+	srcAddr := memcore.MemcoreMarkDereference(src)
 
 	memcore.MemoryMoveNoHeapPointers(dstAddr, srcAddr, uintptr(totalBytes))
 
@@ -117,8 +117,8 @@ func ArraySnapshotRestore[T any](dest, src memcore.Pointer) error {
 //
 //go:nosplit
 //go:inline
-func ArrayCapacityGet[T any](array memcore.Pointer) uint64 {
-	instance := memcore.MemcorePointerDereferenceObjectUnsafe[Array[T]](array)
+func ArrayCapacityGet[T any](array memcore.MarkRaw) uint64 {
+	instance := memcore.MemcoreMarkDereferenceObject[Array[T]](array)
 	return instance.capacity
 }
 
@@ -127,9 +127,9 @@ func ArrayCapacityGet[T any](array memcore.Pointer) uint64 {
 //
 //go:nosplit
 //go:inline
-func ArrayItemGetAt[T any](array memcore.Pointer, idx uint64) (T, error) {
-	instance := memcore.MemcorePointerDereferenceObjectUnsafe[Array[T]](array)
-	baseAddr := memcore.MemcorePointerDereferenceRaw(array)
+func ArrayItemGetAt[T any](array memcore.MarkRaw, idx uint64) (T, error) {
+	instance := memcore.MemcoreMarkDereferenceObject[Array[T]](array)
+	baseAddr := memcore.MemcoreMarkDereference(array)
 
 	if error := arrayGuaranteeIdxValidity(instance, idx); error != nil {
 		var zero T
@@ -143,9 +143,9 @@ func ArrayItemGetAt[T any](array memcore.Pointer, idx uint64) (T, error) {
 // It does no bounds checks.
 //
 //go:inline
-func ArrayItemGetAtUnsafe[T any](array memcore.Pointer, idx uint64) T {
-	instance := memcore.MemcorePointerDereferenceObjectUnsafe[Array[T]](array)
-	baseAddr := memcore.MemcorePointerDereferenceRaw(array)
+func ArrayItemGetAtUnsafe[T any](array memcore.MarkRaw, idx uint64) T {
+	instance := memcore.MemcoreMarkDereferenceObject[Array[T]](array)
+	baseAddr := memcore.MemcoreMarkDereference(array)
 	return *(*T)(arrayGetPtrAtIdx(instance, baseAddr, idx))
 }
 
@@ -157,9 +157,9 @@ func ArrayItemGetAtUnsafe[T any](array memcore.Pointer, idx uint64) T {
 //
 //go:nosplit
 //go:inline
-func ArrayItemPtrGetAt[T any](array memcore.Pointer, idx uint64) (*T, error) {
-	instance := memcore.MemcorePointerDereferenceObjectUnsafe[Array[T]](array)
-	baseAddr := memcore.MemcorePointerDereferenceRaw(array)
+func ArrayItemPtrGetAt[T any](array memcore.MarkRaw, idx uint64) (*T, error) {
+	instance := memcore.MemcoreMarkDereferenceObject[Array[T]](array)
+	baseAddr := memcore.MemcoreMarkDereference(array)
 	if error := arrayGuaranteeIdxValidity(instance, idx); error != nil {
 		return nil, error
 	}
@@ -174,9 +174,9 @@ func ArrayItemPtrGetAt[T any](array memcore.Pointer, idx uint64) (*T, error) {
 // Use at your own discretion!
 //
 //go:inline
-func ArrayItemPtrGetAtUnsafe[T any](array memcore.Pointer, idx uint64) *T {
-	instance := memcore.MemcorePointerDereferenceObjectUnsafe[Array[T]](array)
-	baseAddr := memcore.MemcorePointerDereferenceRaw(array)
+func ArrayItemPtrGetAtUnsafe[T any](array memcore.MarkRaw, idx uint64) *T {
+	instance := memcore.MemcoreMarkDereferenceObject[Array[T]](array)
+	baseAddr := memcore.MemcoreMarkDereference(array)
 	return (*T)(arrayGetPtrAtIdx(instance, baseAddr, idx))
 }
 
@@ -185,13 +185,13 @@ func ArrayItemPtrGetAtUnsafe[T any](array memcore.Pointer, idx uint64) *T {
 //
 //go:nosplit
 //go:inline
-func ArraySetAt[T any](array memcore.Pointer, idx uint64, value T) error {
-	instance := memcore.MemcorePointerDereferenceObjectUnsafe[Array[T]](array)
+func ArraySetAt[T any](array memcore.MarkRaw, idx uint64, value T) error {
+	instance := memcore.MemcoreMarkDereferenceObject[Array[T]](array)
 	if error := arrayGuaranteeIdxValidity(instance, idx); error != nil {
 		return error
 	}
 
-	memcore.MemcoreFunctionGetTyped[setFn[T]](instance.setFnID)(idx, value)
+	memcore.MemcoreFunctionRetrieveTyped[setFn[T]](instance.setFnID)(idx, value)
 
 	return nil
 }
@@ -201,16 +201,16 @@ func ArraySetAt[T any](array memcore.Pointer, idx uint64, value T) error {
 //
 //go:nosplit
 //go:inline
-func ArraySetAtUnsafe[T any](array memcore.Pointer, idx uint64, value T) {
-	instance := memcore.MemcorePointerDereferenceObjectUnsafe[Array[T]](array)
-	memcore.MemcoreFunctionGetTyped[setFn[T]](instance.setFnID)(idx, value)
+func ArraySetAtUnsafe[T any](array memcore.MarkRaw, idx uint64, value T) {
+	instance := memcore.MemcoreMarkDereferenceObject[Array[T]](array)
+	memcore.MemcoreFunctionRetrieveTyped[setFn[T]](instance.setFnID)(idx, value)
 }
 
 // ArrayReplaceInternal replaces srcIdx with the value at destIdx efficiently.
 //
 //go:inline
-func ArrayReplaceInternal[T any](array memcore.Pointer, srcIdx, destIdx uint64) error {
-	instance := memcore.MemcorePointerDereferenceObjectUnsafe[Array[T]](array)
+func ArrayReplaceInternal[T any](array memcore.MarkRaw, srcIdx, destIdx uint64) error {
+	instance := memcore.MemcoreMarkDereferenceObject[Array[T]](array)
 	if error := arrayGuaranteeIdxValidity(instance, srcIdx); error != nil {
 		return error
 	}
@@ -219,7 +219,7 @@ func ArrayReplaceInternal[T any](array memcore.Pointer, srcIdx, destIdx uint64) 
 		return error
 	}
 
-	baseAddr := memcore.MemcorePointerDereferenceRaw(array)
+	baseAddr := memcore.MemcoreMarkDereference(array)
 
 	srcPtr := arrayGetPtrAtIdx(instance, baseAddr, srcIdx)
 	dstPtr := arrayGetPtrAtIdx(instance, baseAddr, destIdx)
@@ -234,9 +234,9 @@ func ArrayReplaceInternal[T any](array memcore.Pointer, srcIdx, destIdx uint64) 
 // It does no bounds checks.
 //
 //go:inline
-func ArrayReplaceInternalUnsafe[T any](array memcore.Pointer, srcIdx, destIdx uint64) {
-	instance := memcore.MemcorePointerDereferenceObjectUnsafe[Array[T]](array)
-	baseAddr := memcore.MemcorePointerDereferenceRaw(array)
+func ArrayReplaceInternalUnsafe[T any](array memcore.MarkRaw, srcIdx, destIdx uint64) {
+	instance := memcore.MemcoreMarkDereferenceObject[Array[T]](array)
+	baseAddr := memcore.MemcoreMarkDereference(array)
 	srcPtr := arrayGetPtrAtIdx(instance, baseAddr, srcIdx)
 	dstPtr := arrayGetPtrAtIdx(instance, baseAddr, destIdx)
 
@@ -264,8 +264,8 @@ func ArrayReplaceInternalUnsafe[T any](array memcore.Pointer, srcIdx, destIdx ui
 //
 //go:nosplit
 //go:inline
-func ArrayShiftRight[T any](array memcore.Pointer, from, to, count uint64) error {
-	instance := memcore.MemcorePointerDereferenceObjectUnsafe[Array[T]](array)
+func ArrayShiftRight[T any](array memcore.MarkRaw, from, to, count uint64) error {
+	instance := memcore.MemcoreMarkDereferenceObject[Array[T]](array)
 	if from >= instance.capacity || to >= instance.capacity {
 		return fmt.Errorf("invalid range: from=%d to=%d capacity=%d", from, to, instance.capacity)
 	}
@@ -299,9 +299,9 @@ func ArrayShiftRight[T any](array memcore.Pointer, from, to, count uint64) error
 //
 //go:nosplit
 //go:inline
-func ArrayShiftRightUnsafe[T any](array memcore.Pointer, from, to, count uint64) {
-	instance := memcore.MemcorePointerDereferenceObjectUnsafe[Array[T]](array)
-	baseAddr := memcore.MemcorePointerDereferenceRaw(array)
+func ArrayShiftRightUnsafe[T any](array memcore.MarkRaw, from, to, count uint64) {
+	instance := memcore.MemcoreMarkDereferenceObject[Array[T]](array)
+	baseAddr := memcore.MemcoreMarkDereference(array)
 	elemSize := instance.itemSizeUintPtr
 	srcPtr := arrayGetPtrAtIdx(instance, baseAddr, from)
 	dstPtr := arrayGetPtrAtIdx(instance, baseAddr, from+count)
@@ -332,8 +332,8 @@ func ArrayShiftRightUnsafe[T any](array memcore.Pointer, from, to, count uint64)
 //
 //go:nosplit
 //go:inline
-func ArrayShiftLeft[T any](array memcore.Pointer, from, to, count uint64) error {
-	instance := memcore.MemcorePointerDereferenceObjectUnsafe[Array[T]](array)
+func ArrayShiftLeft[T any](array memcore.MarkRaw, from, to, count uint64) error {
+	instance := memcore.MemcoreMarkDereferenceObject[Array[T]](array)
 	if from >= instance.capacity || to >= instance.capacity {
 		return fmt.Errorf("invalid range: from=%d to=%d capacity=%d", from, to, instance.capacity)
 	}
@@ -367,9 +367,9 @@ func ArrayShiftLeft[T any](array memcore.Pointer, from, to, count uint64) error 
 //
 //go:nosplit
 //go:inline
-func ArrayShiftLeftUnsafe[T any](array memcore.Pointer, from, to, count uint64) {
-	instance := memcore.MemcorePointerDereferenceObjectUnsafe[Array[T]](array)
-	baseAddr := memcore.MemcorePointerDereferenceRaw(array)
+func ArrayShiftLeftUnsafe[T any](array memcore.MarkRaw, from, to, count uint64) {
+	instance := memcore.MemcoreMarkDereferenceObject[Array[T]](array)
+	baseAddr := memcore.MemcoreMarkDereference(array)
 
 	elemSize := instance.itemSizeUintPtr
 	srcPtr := arrayGetPtrAtIdx(instance, baseAddr, from+count)
@@ -384,13 +384,13 @@ func ArrayShiftLeftUnsafe[T any](array memcore.Pointer, from, to, count uint64) 
 //
 //go:nosplit
 //go:inline
-func ArrayDeleteAt[T any](array memcore.Pointer, idx uint64) error {
-	instance := memcore.MemcorePointerDereferenceObjectUnsafe[Array[T]](array)
+func ArrayDeleteAt[T any](array memcore.MarkRaw, idx uint64) error {
+	instance := memcore.MemcoreMarkDereferenceObject[Array[T]](array)
 	if error := arrayGuaranteeIdxValidity(instance, idx); error != nil {
 		return error
 	}
 
-	baseAddr := memcore.MemcorePointerDereferenceRaw(array)
+	baseAddr := memcore.MemcoreMarkDereference(array)
 	currentPtr := arrayGetPtrAtIdx(instance, baseAddr, idx)
 	memcore.MemoryClearNoHeapPointers(currentPtr, uintptr(instance.itemSize))
 	return nil
@@ -402,9 +402,9 @@ func ArrayDeleteAt[T any](array memcore.Pointer, idx uint64) error {
 //
 //go:nosplit
 //go:inline
-func ArrayDeleteAtUnsafe[T any](array memcore.Pointer, idx uint64) {
-	instance := memcore.MemcorePointerDereferenceObjectUnsafe[Array[T]](array)
-	baseAddr := memcore.MemcorePointerDereferenceRaw(array)
+func ArrayDeleteAtUnsafe[T any](array memcore.MarkRaw, idx uint64) {
+	instance := memcore.MemcoreMarkDereferenceObject[Array[T]](array)
+	baseAddr := memcore.MemcoreMarkDereference(array)
 	currentPtr := arrayGetPtrAtIdx(instance, baseAddr, idx)
 	memcore.MemoryClearNoHeapPointers(currentPtr, uintptr(instance.itemSize))
 }
@@ -414,17 +414,17 @@ func ArrayDeleteAtUnsafe[T any](array memcore.Pointer, idx uint64) {
 //
 //go:nosplit
 //go:inline
-func ArrayClear[T any](array memcore.Pointer) {
-	instance := memcore.MemcorePointerDereferenceObjectUnsafe[Array[T]](array)
-	baseAddr := memcore.MemcorePointerDereferenceRaw(array)
+func ArrayClear[T any](array memcore.MarkRaw) {
+	instance := memcore.MemcoreMarkDereferenceObject[Array[T]](array)
+	baseAddr := memcore.MemcoreMarkDereference(array)
 	memcore.MemoryClearNoHeapPointers(arrayComputeDataAddr(instance, baseAddr), uintptr(instance.capacity)*uintptr(instance.itemSize))
 }
 
 // ArrayIsIdxValid checks whether the given index is valid.
 //
 //go:inline
-func ArrayIsIdxValid[T any](array memcore.Pointer, idx uint64) bool {
-	instance := memcore.MemcorePointerDereferenceObjectUnsafe[Array[T]](array)
+func ArrayIsIdxValid[T any](array memcore.MarkRaw, idx uint64) bool {
+	instance := memcore.MemcoreMarkDereferenceObject[Array[T]](array)
 	return idx < instance.capacity
 }
 
