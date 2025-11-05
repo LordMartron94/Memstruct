@@ -6,21 +6,6 @@ import (
 	"unsafe"
 )
 
-const arrayMemmoveThreshold uint64 = 128
-
-type setFn[T any] func(idx uint64, value T)
-
-func setByMove[T any](instance *Array[T], baseAddr unsafe.Pointer, idx uint64, value T) {
-	dstPtr := arrayGetPtrAtIdx(instance, baseAddr, idx)
-	srcPtr := unsafe.Pointer(&value)
-	memcore.MemoryMoveNoHeapPointers(dstPtr, srcPtr, uintptr(memcore.SizeOf[T]()))
-}
-
-func setByAssign[T any](instance *Array[T], baseAddr unsafe.Pointer, idx uint64, value T) {
-	currentPtr := arrayGetPtrAtIdx(instance, baseAddr, idx)
-	*(*T)(currentPtr) = value
-}
-
 func ArrayRequiredBytesGet[T any](capacity uint64) uint64 {
 	headerSize := memcore.SizeOf[Array[T]]()
 	itemSize := memcore.SizeOf[T]()
@@ -31,7 +16,7 @@ func ArrayRequiredAlignmentGet[T any]() uint64 {
 	return max(memcore.AlignOf[T](), memcore.AlignOf[Array[T]]())
 }
 
-// Array is a custom array implementation built on top of the custom allocators.
+// Array is a custom array implementation built on top of memcore.
 type Array[T any] struct {
 	dataAddrOffset uintptr
 	capacity       uint64
@@ -58,19 +43,9 @@ func ArrayInitializeAt[T any](arrayAddr memcore.MarkRaw, capacity uint64) {
 		itemSizeUintPtr: uintptr(itemSize),
 	}
 
-	if itemSize > arrayMemmoveThreshold {
-		arrayPtr.setFnID = memcore.MemcoreFunctionRegisterTyped[setFn[T]](
-			func(i uint64, v T) {
-				setByMove(arrayPtr, memcore.MemcoreMarkDereference(arrayAddr), i, v)
-			},
-		)
-	} else {
-		arrayPtr.setFnID = memcore.MemcoreFunctionRegisterTyped[setFn[T]](
-			func(i uint64, v T) {
-				setByAssign(arrayPtr, memcore.MemcoreMarkDereference(arrayAddr), i, v)
-			},
-		)
-	}
+	arrayPtr.setFnID = memcore.MemcoreFunctionRegisterTyped(
+		getMovementFunc[T](itemSize),
+	)
 }
 
 // ArraySnapshotCreate creates a deep copy of an array at a new memory location
@@ -191,7 +166,10 @@ func ArraySetAt[T any](array memcore.MarkRaw, idx uint64, value T) error {
 		return error
 	}
 
-	memcore.MemcoreFunctionRetrieveTyped[setFn[T]](instance.setFnID)(idx, value)
+	baseAddr := memcore.MemcoreMarkDereference(array)
+	itemPtr := arrayGetPtrAtIdx(instance, baseAddr, idx)
+
+	memcore.MemcoreFunctionRetrieveTyped[setFn[T]](instance.setFnID)(itemPtr, value)
 
 	return nil
 }
@@ -203,7 +181,11 @@ func ArraySetAt[T any](array memcore.MarkRaw, idx uint64, value T) error {
 //go:inline
 func ArraySetAtUnsafe[T any](array memcore.MarkRaw, idx uint64, value T) {
 	instance := memcore.MemcoreMarkDereferenceObject[Array[T]](array)
-	memcore.MemcoreFunctionRetrieveTyped[setFn[T]](instance.setFnID)(idx, value)
+
+	baseAddr := memcore.MemcoreMarkDereference(array)
+	itemPtr := arrayGetPtrAtIdx(instance, baseAddr, idx)
+
+	memcore.MemcoreFunctionRetrieveTyped[setFn[T]](instance.setFnID)(itemPtr, value)
 }
 
 // ArrayReplaceInternal replaces srcIdx with the value at destIdx efficiently.
