@@ -3,6 +3,7 @@ package memstruct
 import (
 	"fmt"
 	"foundation"
+	"math"
 	"memcore"
 	"strings"
 	"unsafe"
@@ -561,6 +562,8 @@ func VectorScalarSetAllSequence[T foundation.Numeric](vector memcore.MarkRaw, in
 			panic(fmt.Errorf("cannot set value of idx %d: would result in overflow: requested=%f,max=%f", idx, v, maxT))
 		}
 
+		idx++
+
 		return T(v)
 	})
 }
@@ -766,6 +769,103 @@ func VectorElementWiseDotProductF64[T, U foundation.Numeric](vectorAAddr, vector
 	})
 
 	return dotProduct
+}
+
+// VectorElementWiseGreaterThanOrEqualTo produces a boolean mask determining whether each element
+// in Vector A is bigger than or equal to the same element in Vector B.
+// The mask must be of type Array[bool]
+// Capacity equality must be guaranteed by the caller.
+func VectorElementWiseGreaterThanOrEqualTo[T, U foundation.Numeric](
+	vectorAAddr, vectorBAddr, maskAddr memcore.MarkRaw,
+) {
+	i := uint64(0)
+	vectorBinaryReadOnlyExecute(vectorAAddr, vectorBAddr, func(a T, b U) {
+		if float64(a) >= float64(b) {
+			ArraySetAtUnsafe(maskAddr, i, true)
+		} else {
+			ArraySetAtUnsafe(maskAddr, i, false)
+		}
+
+		i++
+	})
+}
+
+// VectorElementWiseGreaterThan produces a boolean mask determining whether each element
+// in Vector A is bigger than the same element in Vector B.
+// The mask must be of type Array[bool]
+// Capacity equality must be guaranteed by the caller.
+func VectorElementWiseGreaterThan[T, U foundation.Numeric](
+	vectorAAddr, vectorBAddr, maskAddr memcore.MarkRaw,
+) {
+	i := uint64(0)
+	vectorBinaryReadOnlyExecute(vectorAAddr, vectorBAddr, func(a T, b U) {
+		if float64(a) > float64(b) {
+			ArraySetAtUnsafe(maskAddr, i, true)
+		} else {
+			ArraySetAtUnsafe(maskAddr, i, false)
+		}
+
+		i++
+	})
+}
+
+// VectorElementWiseSmallerThanOrEqualTo produces a boolean mask determining whether each element
+// in Vector A is smaller than or equal to the same element in Vector B.
+// The mask must be of type Array[bool]
+// Capacity equality must be guaranteed by the caller.
+func VectorElementWiseSmallerThanOrEqualTo[T, U foundation.Numeric](
+	vectorAAddr, vectorBAddr, maskAddr memcore.MarkRaw,
+) {
+	i := uint64(0)
+	vectorBinaryReadOnlyExecute(vectorAAddr, vectorBAddr, func(a T, b U) {
+		if float64(a) <= float64(b) {
+			ArraySetAtUnsafe(maskAddr, i, true)
+		} else {
+			ArraySetAtUnsafe(maskAddr, i, false)
+		}
+
+		i++
+	})
+}
+
+// VectorElementWiseSmallerThan produces a boolean mask determining whether each element
+// in Vector A is smaller than the same element in Vector B.
+// The mask must be of type Array[bool]
+// Capacity equality must be guaranteed by the caller.
+func VectorElementWiseSmallerThan[T, U foundation.Numeric](
+	vectorAAddr, vectorBAddr, maskAddr memcore.MarkRaw,
+) {
+	i := uint64(0)
+	vectorBinaryReadOnlyExecute(vectorAAddr, vectorBAddr, func(a T, b U) {
+		if float64(a) < float64(b) {
+			ArraySetAtUnsafe(maskAddr, i, true)
+		} else {
+			ArraySetAtUnsafe(maskAddr, i, false)
+		}
+
+		i++
+	})
+}
+
+// VectorElementWiseEqualTo produces a boolean mask determining whether each element
+// in Vector A is equal to the same element in Vector B within tolerance.
+// The mask must be of type Array[bool]
+// Capacity equality must be guaranteed by the caller.
+func VectorElementWiseEqualTo[T, U foundation.Numeric](
+	vectorAAddr, vectorBAddr, maskAddr memcore.MarkRaw,
+	tolerance float64,
+) {
+	i := uint64(0)
+	vectorBinaryReadOnlyExecute(vectorAAddr, vectorBAddr, func(a T, b U) {
+		equalEnough := math.Abs(float64(a)-float64(b)) <= tolerance
+		if equalEnough {
+			ArraySetAtUnsafe(maskAddr, i, true)
+		} else {
+			ArraySetAtUnsafe(maskAddr, i, false)
+		}
+
+		i++
+	})
 }
 
 // -------------------------- PRIVATE HELPERS
