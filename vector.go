@@ -435,41 +435,10 @@ func VectorIsIdxValid[T foundation.Numeric](vector memcore.MarkRaw, idx uint64) 
 	return idx < instance.capacity
 }
 
-// VectorSetAll sets all values within the vector to value T.
-func VectorSetAll[T foundation.Numeric](vector memcore.MarkRaw, v T) {
-	vectorUnaryExecute(vector, vector, func(_ T) T {
-		return v
-	})
-}
+// ------------------------------------------------- STRUCTURAL OPS
 
-// VectorZeroAll sets all values within the Vector to its zero value.
-// This is different from clearing the memory to 0.
-func VectorZeroAll[T foundation.Numeric](vector memcore.MarkRaw) {
-	var zero T
-	vectorUnaryExecute(vector, vector, func(_ T) T {
-		return zero
-	})
-}
-
-// VectorSetAllSequence sets all the values in the Vector to a value computed as:
-// initial + (idx*step).
-// It panics if the resulting value would be bigger than the numeric type.
-func VectorSetAllSequence[T foundation.Numeric](vector memcore.MarkRaw, initial, step T) {
-	maxT := float64(foundation.MaxValue[T]())
-	idx := 0
-	vectorUnaryExecute(vector, vector, func(_ T) T {
-		v := float64(initial) + (float64(idx) * float64(step))
-
-		if v > maxT {
-			panic(fmt.Errorf("cannot set value of idx %d: would result in overflow: requested=%f,max=%f", idx, v, maxT))
-		}
-
-		return T(v)
-	})
-}
-
-// VectorSumF32 computes the linear sum of the vector’s elements in float32 precision.
-func VectorSumF32[T foundation.Numeric](vector memcore.MarkRaw) float32 {
+// VectorStructuralSumF32 computes the linear sum of the vector’s elements in float32 precision.
+func VectorStructuralSumF32[T foundation.Numeric](vector memcore.MarkRaw) float32 {
 	sum := float32(0)
 
 	vectorUnaryReadOnlyExecute(vector, func(a T) {
@@ -479,8 +448,8 @@ func VectorSumF32[T foundation.Numeric](vector memcore.MarkRaw) float32 {
 	return sum
 }
 
-// VectorSumF64 computes the linear sum of the vector’s elements in float64 precision.
-func VectorSumF64[T foundation.Numeric](vector memcore.MarkRaw) float64 {
+// VectorStructuralSumF64 computes the linear sum of the vector’s elements in float64 precision.
+func VectorStructuralSumF64[T foundation.Numeric](vector memcore.MarkRaw) float64 {
 	sum := float64(0)
 
 	vectorUnaryReadOnlyExecute(vector, func(a T) {
@@ -490,8 +459,8 @@ func VectorSumF64[T foundation.Numeric](vector memcore.MarkRaw) float64 {
 	return sum
 }
 
-// VectorSumSquaredF32 computes the sum of squares (used in magnitude calculation) in float32 precision.
-func VectorSumSquaredF32[T foundation.Numeric](vector memcore.MarkRaw) float32 {
+// VectorStructuralSumSquaredF32 computes the sum of squares (used in magnitude calculation) in float32 precision.
+func VectorStructuralSumSquaredF32[T foundation.Numeric](vector memcore.MarkRaw) float32 {
 	sqrSum := float32(0)
 
 	vectorUnaryReadOnlyExecute(vector, func(a T) {
@@ -501,8 +470,8 @@ func VectorSumSquaredF32[T foundation.Numeric](vector memcore.MarkRaw) float32 {
 	return sqrSum
 }
 
-// VectorSumSquaredF64 computes the sum of squares (used in magnitude calculation) in float64 precision.
-func VectorSumSquaredF64[T foundation.Numeric](vector memcore.MarkRaw) float64 {
+// VectorStructuralSumSquaredF64 computes the sum of squares (used in magnitude calculation) in float64 precision.
+func VectorStructuralSumSquaredF64[T foundation.Numeric](vector memcore.MarkRaw) float64 {
 	sqrSum := float64(0)
 
 	vectorUnaryReadOnlyExecute(vector, func(a T) {
@@ -512,8 +481,8 @@ func VectorSumSquaredF64[T foundation.Numeric](vector memcore.MarkRaw) float64 {
 	return sqrSum
 }
 
-// VectorMagnitudeF32 computes the magnitude of a given vector in float32 precision.
-func VectorMagnitudeF32[T foundation.Numeric](vector memcore.MarkRaw) float32 {
+// VectorStructuralMagnitudeF32 computes the magnitude of a given vector in float32 precision.
+func VectorStructuralMagnitudeF32[T foundation.Numeric](vector memcore.MarkRaw) float32 {
 	sqrSum := float32(0)
 
 	vectorUnaryReadOnlyExecute(vector, func(a T) {
@@ -524,8 +493,8 @@ func VectorMagnitudeF32[T foundation.Numeric](vector memcore.MarkRaw) float32 {
 	return sqrRoot
 }
 
-// VectorMagnitudeF64 computes the magnitude of a given vector in float64 precision.
-func VectorMagnitudeF64[T foundation.Numeric](vector memcore.MarkRaw) float64 {
+// VectorStructuralMagnitudeF64 computes the magnitude of a given vector in float64 precision.
+func VectorStructuralMagnitudeF64[T foundation.Numeric](vector memcore.MarkRaw) float64 {
 	sqrSum := float64(0)
 
 	vectorUnaryReadOnlyExecute(vector, func(a T) {
@@ -541,19 +510,19 @@ func VectorNormalizedF32[T foundation.Numeric](
 	currentVector memcore.MarkRaw,
 	newVectorAddr memcore.MarkRaw,
 ) {
-	magnitude := VectorMagnitudeF32[T](currentVector)
+	magnitude := VectorStructuralMagnitudeF32[T](currentVector)
 	inv := 1.0 / magnitude
 	vectorUnaryExecute(currentVector, newVectorAddr, func(a T) float32 {
 		return float32(a) * inv
 	})
 }
 
-// VectorNormalizedF64 normalizes the vector with float64 precision such that its magnitude is 1.
-func VectorNormalizedF64[T foundation.Numeric](
+// VectorStructuralNormalizedF64 normalizes the vector with float64 precision such that its magnitude is 1.
+func VectorStructuralNormalizedF64[T foundation.Numeric](
 	currentVector memcore.MarkRaw,
 	newVectorAddr memcore.MarkRaw,
 ) {
-	magnitude := VectorMagnitudeF64[T](currentVector)
+	magnitude := VectorStructuralMagnitudeF64[T](currentVector)
 	inv := 1.0 / magnitude
 
 	vectorUnaryExecute(currentVector, newVectorAddr, func(a T) float64 {
@@ -561,32 +530,43 @@ func VectorNormalizedF64[T foundation.Numeric](
 	})
 }
 
-// VectorDotProductF32 computes the dot product between two vectors in float32 precision.
-// T is the datatype of vector A, and U is the datatype of vector B.
-func VectorDotProductF32[T, U foundation.Numeric](vectorAAddr, vectorBAddr memcore.MarkRaw) float32 {
-	dotProduct := float32(0)
+// ------------------------------------------------- SCALARS
 
-	vectorBinaryReadOnlyExecute(vectorAAddr, vectorBAddr, func(a T, b U) {
-		dotProduct += float32(a) * float32(b)
+// VectorScalarSetAll sets all values within the vector to value T.
+func VectorScalarSetAll[T foundation.Numeric](vector memcore.MarkRaw, v T) {
+	vectorUnaryExecute(vector, vector, func(_ T) T {
+		return v
 	})
-
-	return dotProduct
 }
 
-// VectorDotProductF64 computes the dot product between two vectors in float64 precision.
-// T is the datatype of vector A, and U is the datatype of vector B.
-func VectorDotProductF64[T, U foundation.Numeric](vectorAAddr, vectorBAddr memcore.MarkRaw) float64 {
-	dotProduct := float64(0)
-
-	vectorBinaryReadOnlyExecute(vectorAAddr, vectorBAddr, func(a T, b U) {
-		dotProduct += float64(a) * float64(b)
+// VectorScalarZeroAll sets all values within the Vector to its zero value.
+// This is different from clearing the memory to 0.
+func VectorScalarZeroAll[T foundation.Numeric](vector memcore.MarkRaw) {
+	var zero T
+	vectorUnaryExecute(vector, vector, func(_ T) T {
+		return zero
 	})
-
-	return dotProduct
 }
 
-// VectorScaleF32 scales the vector with float32 precision such each value is multiplied by the scalar.
-func VectorScaleF32[T, S foundation.Numeric](
+// VectorScalarSetAllSequence sets all the values in the Vector to a value computed as:
+// initial + (idx*step).
+// It panics if the resulting value would be bigger than the numeric type.
+func VectorScalarSetAllSequence[T foundation.Numeric](vector memcore.MarkRaw, initial, step T) {
+	maxT := float64(foundation.MaxValue[T]())
+	idx := 0
+	vectorUnaryExecute(vector, vector, func(_ T) T {
+		v := float64(initial) + (float64(idx) * float64(step))
+
+		if v > maxT {
+			panic(fmt.Errorf("cannot set value of idx %d: would result in overflow: requested=%f,max=%f", idx, v, maxT))
+		}
+
+		return T(v)
+	})
+}
+
+// VectorScalarMultiplyF32 multiplies the values of the Vector by the scalar in float32 precision.
+func VectorScalarMultiplyF32[T, S foundation.Numeric](
 	currentVectorAddr, newVectorAddr memcore.MarkRaw,
 	scalar S,
 ) {
@@ -595,8 +575,8 @@ func VectorScaleF32[T, S foundation.Numeric](
 	})
 }
 
-// VectorScaleF64 scales the vector with float64 precision such each value is multiplied by the scalar.
-func VectorScaleF64[T, S foundation.Numeric](
+// VectorScalarMultiplyF64 multiplies the values of the Vector by the scalar in float64 precision.
+func VectorScalarMultiplyF64[T, S foundation.Numeric](
 	currentVectorAddr, newVectorAddr memcore.MarkRaw,
 	scalar S,
 ) {
@@ -605,9 +585,69 @@ func VectorScaleF64[T, S foundation.Numeric](
 	})
 }
 
-// VectorClamp transforms the vector in such a way that each element is between
+// VectorScalarDivideF32 divides the values of the Vector by the scalar in float32 precision.
+func VectorScalarDivideF32[T, S foundation.Numeric](
+	currentVectorAddr, newVectorAddr memcore.MarkRaw,
+	scalar S,
+) {
+	vectorUnaryExecute(currentVectorAddr, newVectorAddr, func(a T) float32 {
+		return float32(a) / float32(scalar)
+	})
+}
+
+// VectorScalarDivideF64 divides the values of the Vector by the scalar in float64 precision.
+func VectorScalarDivideF64[T, S foundation.Numeric](
+	currentVectorAddr, newVectorAddr memcore.MarkRaw,
+	scalar S,
+) {
+	vectorUnaryExecute(currentVectorAddr, newVectorAddr, func(a T) float64 {
+		return float64(a) / float64(scalar)
+	})
+}
+
+// VectorScalarAddF32 adds the values of the Vector by the scalar in float32 precision.
+func VectorScalarAddF32[T, S foundation.Numeric](
+	currentVectorAddr, newVectorAddr memcore.MarkRaw,
+	scalar S,
+) {
+	vectorUnaryExecute(currentVectorAddr, newVectorAddr, func(a T) float32 {
+		return float32(a) + float32(scalar)
+	})
+}
+
+// VectorScalarAddF64 adds the values of the Vector by the scalar in float64 precision.
+func VectorScalarAddF64[T, S foundation.Numeric](
+	currentVectorAddr, newVectorAddr memcore.MarkRaw,
+	scalar S,
+) {
+	vectorUnaryExecute(currentVectorAddr, newVectorAddr, func(a T) float64 {
+		return float64(a) + float64(scalar)
+	})
+}
+
+// VectorScalarSubtractF32 subtracts the scalar from the values in the Vector in float32 precision.
+func VectorScalarSubtractF32[T, S foundation.Numeric](
+	currentVectorAddr, newVectorAddr memcore.MarkRaw,
+	scalar S,
+) {
+	vectorUnaryExecute(currentVectorAddr, newVectorAddr, func(a T) float32 {
+		return float32(a) - float32(scalar)
+	})
+}
+
+// VectorScalarSubtractF64 subtracts the scalar from the values in the Vector in float64 precision.
+func VectorScalarSubtractF64[T, S foundation.Numeric](
+	currentVectorAddr, newVectorAddr memcore.MarkRaw,
+	scalar S,
+) {
+	vectorUnaryExecute(currentVectorAddr, newVectorAddr, func(a T) float64 {
+		return float64(a) - float64(scalar)
+	})
+}
+
+// VectorScalarClamp transforms the vector in such a way that each element is between
 // min and max.
-func VectorClamp[T foundation.Numeric](
+func VectorScalarClamp[T foundation.Numeric](
 	vector memcore.MarkRaw,
 	min, max T,
 ) {
@@ -622,9 +662,11 @@ func VectorClamp[T foundation.Numeric](
 	})
 }
 
-// VectorAddF32 adds the values of Vector B to Vector A, resulting in Vector C at newVectorAddr.
+// ------------------------------------------------- ELEMENT WISE
+
+// VectorElementWiseAddF32 adds the values of Vector B to Vector A, resulting in Vector C at newVectorAddr.
 // It does so in float32 precision.
-func VectorAddF32[T, U foundation.Numeric](
+func VectorElementWiseAddF32[T, U foundation.Numeric](
 	vectorAAddr, vectorBAddr, newVectorAddr memcore.MarkRaw,
 ) {
 	vectorBinaryExecute(vectorAAddr, vectorBAddr, newVectorAddr, func(a T, b U) float32 {
@@ -632,9 +674,9 @@ func VectorAddF32[T, U foundation.Numeric](
 	})
 }
 
-// VectorAddF64 adds the values of Vector B to Vector A, resulting in Vector C at newVectorAddr.
+// VectorElementWiseAddF64 adds the values of Vector B to Vector A, resulting in Vector C at newVectorAddr.
 // It does so in float64 precision.
-func VectorAddF64[T, U foundation.Numeric](
+func VectorElementWiseAddF64[T, U foundation.Numeric](
 	vectorAAddr, vectorBAddr, newVectorAddr memcore.MarkRaw,
 ) {
 	vectorBinaryExecute(vectorAAddr, vectorBAddr, newVectorAddr, func(a T, b U) float64 {
@@ -642,9 +684,9 @@ func VectorAddF64[T, U foundation.Numeric](
 	})
 }
 
-// VectorSubtractF32 subtracts the values of Vector B from Vector A, resulting in Vector C at newVectorAddr.
+// VectorElementWiseSubtractF32 subtracts the values of Vector B from Vector A, resulting in Vector C at newVectorAddr.
 // It does so in float32 precision.
-func VectorSubtractF32[T, U foundation.Numeric](
+func VectorElementWiseSubtractF32[T, U foundation.Numeric](
 	vectorAAddr, vectorBAddr, newVectorAddr memcore.MarkRaw,
 ) {
 	vectorBinaryExecute(vectorAAddr, vectorBAddr, newVectorAddr, func(a T, b U) float32 {
@@ -652,9 +694,9 @@ func VectorSubtractF32[T, U foundation.Numeric](
 	})
 }
 
-// VectorSubtractF64 subtracts the values of Vector B from Vector A, resulting in Vector C at newVectorAddr.
+// VectorElementWiseSubtractF64 subtracts the values of Vector B from Vector A, resulting in Vector C at newVectorAddr.
 // It does so in float364precision.
-func VectorSubtractF64[T, U foundation.Numeric](
+func VectorElementWiseSubtractF64[T, U foundation.Numeric](
 	vectorAAddr, vectorBAddr, newVectorAddr memcore.MarkRaw,
 ) {
 	vectorBinaryExecute(vectorAAddr, vectorBAddr, newVectorAddr, func(a T, b U) float64 {
@@ -662,9 +704,9 @@ func VectorSubtractF64[T, U foundation.Numeric](
 	})
 }
 
-// VectorMultiplyF32 multiplies the values of Vector A by Vector B, resulting in Vector C at newVectorAddr.
+// VectorElementWiseMultiplyF32 multiplies the values of Vector A by Vector B, resulting in Vector C at newVectorAddr.
 // It does so in float32 precision.
-func VectorMultiplyF32[T, U foundation.Numeric](
+func VectorElementWiseMultiplyF32[T, U foundation.Numeric](
 	vectorAAddr, vectorBAddr, newVectorAddr memcore.MarkRaw,
 ) {
 	vectorBinaryExecute(vectorAAddr, vectorBAddr, newVectorAddr, func(a T, b U) float32 {
@@ -672,9 +714,9 @@ func VectorMultiplyF32[T, U foundation.Numeric](
 	})
 }
 
-// VectorMultiplyF64 multiplies the values of Vector A by Vector B, resulting in Vector C at newVectorAddr.
+// VectorElementWiseMultiplyF64 multiplies the values of Vector A by Vector B, resulting in Vector C at newVectorAddr.
 // It does so in float64 precision.
-func VectorMultiplyF64[T, U foundation.Numeric](
+func VectorElementWiseMultiplyF64[T, U foundation.Numeric](
 	vectorAAddr, vectorBAddr, newVectorAddr memcore.MarkRaw,
 ) {
 	vectorBinaryExecute(vectorAAddr, vectorBAddr, newVectorAddr, func(a T, b U) float64 {
@@ -682,9 +724,9 @@ func VectorMultiplyF64[T, U foundation.Numeric](
 	})
 }
 
-// VectorDivideF32 divides the values of Vector A by Vector B, resulting in Vector C at newVectorAddr.
+// VectorElementWiseDivideF32 divides the values of Vector A by Vector B, resulting in Vector C at newVectorAddr.
 // It does so in float32 precision.
-func VectorDivideF32[T, U foundation.Numeric](
+func VectorElementWiseDivideF32[T, U foundation.Numeric](
 	vectorAAddr, vectorBAddr, newVectorAddr memcore.MarkRaw,
 ) {
 	vectorBinaryExecute(vectorAAddr, vectorBAddr, newVectorAddr, func(a T, b U) float32 {
@@ -692,14 +734,38 @@ func VectorDivideF32[T, U foundation.Numeric](
 	})
 }
 
-// VectorDivideF64 divides the values of Vector A by Vector B, resulting in Vector C at newVectorAddr.
+// VectorElementWiseDivideF64 divides the values of Vector A by Vector B, resulting in Vector C at newVectorAddr.
 // It does so in float64 precision.
-func VectorDivideF64[T, U foundation.Numeric](
+func VectorElementWiseDivideF64[T, U foundation.Numeric](
 	vectorAAddr, vectorBAddr, newVectorAddr memcore.MarkRaw,
 ) {
 	vectorBinaryExecute(vectorAAddr, vectorBAddr, newVectorAddr, func(a T, b U) float64 {
 		return float64(a) / float64(b)
 	})
+}
+
+// VectorElementWiseDotProductF32 computes the dot product between two vectors in float32 precision.
+// T is the datatype of vector A, and U is the datatype of vector B.
+func VectorElementWiseDotProductF32[T, U foundation.Numeric](vectorAAddr, vectorBAddr memcore.MarkRaw) float32 {
+	dotProduct := float32(0)
+
+	vectorBinaryReadOnlyExecute(vectorAAddr, vectorBAddr, func(a T, b U) {
+		dotProduct += float32(a) * float32(b)
+	})
+
+	return dotProduct
+}
+
+// VectorElementWiseDotProductF64 computes the dot product between two vectors in float64 precision.
+// T is the datatype of vector A, and U is the datatype of vector B.
+func VectorElementWiseDotProductF64[T, U foundation.Numeric](vectorAAddr, vectorBAddr memcore.MarkRaw) float64 {
+	dotProduct := float64(0)
+
+	vectorBinaryReadOnlyExecute(vectorAAddr, vectorBAddr, func(a T, b U) {
+		dotProduct += float64(a) * float64(b)
+	})
+
+	return dotProduct
 }
 
 // -------------------------- PRIVATE HELPERS
