@@ -438,6 +438,32 @@ func VectorIsIdxValid[T foundation.Numeric](vector memcore.MarkRaw, idx uint64) 
 
 // ------------------------------------------------- STRUCTURAL OPS
 
+// VectorStructuralMin returns the lowest element within the vector.
+func VectorStructuralMin[T foundation.Numeric](vector memcore.MarkRaw) T {
+	minValue := foundation.MaxValue[T]()
+
+	vectorUnaryReadOnlyExecute(vector, func(item T) {
+		if item < minValue {
+			minValue = item
+		}
+	})
+
+	return minValue
+}
+
+// VectorStructuralMax returns the highest element within the vector.
+func VectorStructuralMax[T foundation.Numeric](vector memcore.MarkRaw) T {
+	maxValue := foundation.MinValue[T]()
+
+	vectorUnaryReadOnlyExecute(vector, func(item T) {
+		if item > maxValue {
+			maxValue = item
+		}
+	})
+
+	return maxValue
+}
+
 // VectorStructuralSumF32 computes the linear sum of the vector’s elements in float32 precision.
 func VectorStructuralSumF32[T foundation.Numeric](vector memcore.MarkRaw) float32 {
 	sum := float32(0)
