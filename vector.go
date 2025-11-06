@@ -629,6 +629,46 @@ func VectorSubtractF64[T, U foundation.Numeric](
 	})
 }
 
+// VectorMultiplyF32 multiplies the values of Vector A by Vector B, resulting in Vector C at newVectorAddr.
+// It does so in float32 precision.
+func VectorMultiplyF32[T, U foundation.Numeric](
+	vectorAAddr, vectorBAddr, newVectorAddr memcore.MarkRaw,
+) {
+	vectorBinaryExecute(vectorAAddr, vectorBAddr, newVectorAddr, func(a T, b U) float32 {
+		return float32(a) * float32(b)
+	})
+}
+
+// VectorMultiplyF64 multiplies the values of Vector A by Vector B, resulting in Vector C at newVectorAddr.
+// It does so in float64 precision.
+func VectorMultiplyF64[T, U foundation.Numeric](
+	vectorAAddr, vectorBAddr, newVectorAddr memcore.MarkRaw,
+) {
+	vectorBinaryExecute(vectorAAddr, vectorBAddr, newVectorAddr, func(a T, b U) float64 {
+		return float64(a) * float64(b)
+	})
+}
+
+// VectorDivideF32 divides the values of Vector A by Vector B, resulting in Vector C at newVectorAddr.
+// It does so in float32 precision.
+func VectorDivideF32[T, U foundation.Numeric](
+	vectorAAddr, vectorBAddr, newVectorAddr memcore.MarkRaw,
+) {
+	vectorBinaryExecute(vectorAAddr, vectorBAddr, newVectorAddr, func(a T, b U) float32 {
+		return float32(a) / float32(b)
+	})
+}
+
+// VectorDivideF64 divides the values of Vector A by Vector B, resulting in Vector C at newVectorAddr.
+// It does so in float64 precision.
+func VectorDivideF64[T, U foundation.Numeric](
+	vectorAAddr, vectorBAddr, newVectorAddr memcore.MarkRaw,
+) {
+	vectorBinaryExecute(vectorAAddr, vectorBAddr, newVectorAddr, func(a T, b U) float64 {
+		return float64(a) / float64(b)
+	})
+}
+
 // -------------------------- PRIVATE HELPERS
 
 //go:inline
