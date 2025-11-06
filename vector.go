@@ -435,6 +435,39 @@ func VectorIsIdxValid[T foundation.Numeric](vector memcore.MarkRaw, idx uint64) 
 	return idx < instance.capacity
 }
 
+// VectorSetAll sets all values within the vector to value T.
+func VectorSetAll[T foundation.Numeric](vector memcore.MarkRaw, v T) {
+	vectorUnaryExecute(vector, vector, func(_ T) T {
+		return v
+	})
+}
+
+// VectorZeroAll sets all values within the Vector to its zero value.
+// This is different from clearing the memory to 0.
+func VectorZeroAll[T foundation.Numeric](vector memcore.MarkRaw) {
+	var zero T
+	vectorUnaryExecute(vector, vector, func(_ T) T {
+		return zero
+	})
+}
+
+// VectorSetAllSequence sets all the values in the Vector to a value computed as:
+// initial + (idx*step).
+// It panics if the resulting value would be bigger than the numeric type.
+func VectorSetAllSequence[T foundation.Numeric](vector memcore.MarkRaw, initial, step T) {
+	maxT := float64(foundation.MaxValue[T]())
+	idx := 0
+	vectorUnaryExecute(vector, vector, func(_ T) T {
+		v := float64(initial) + (float64(idx) * float64(step))
+
+		if v > maxT {
+			panic(fmt.Errorf("cannot set value of idx %d: would result in overflow: requested=%f,max=%f", idx, v, maxT))
+		}
+
+		return T(v)
+	})
+}
+
 // VectorSumF32 computes the linear sum of the vector’s elements in float32 precision.
 func VectorSumF32[T foundation.Numeric](vector memcore.MarkRaw) float32 {
 	sum := float32(0)
