@@ -520,7 +520,72 @@ func VectorClamp[T foundation.Numeric](
 	vectorClamp(vector, min, max)
 }
 
+// VectorAddF32 adds the values of Vector B to Vector A, resulting in Vector C at newVectorAddr.
+// It does so in float32 precision.
+func VectorAddF32[T, U foundation.Numeric](
+	vectorAAddr, vectorBAddr, newVectorAddr memcore.MarkRaw,
+) {
+	vectorAdd[T, U, float32](vectorAAddr, vectorBAddr, newVectorAddr)
+}
+
+// VectorAddF64 adds the values of Vector B to Vector A, resulting in Vector C at newVectorAddr.
+// It does so in float64 precision.
+func VectorAddF64[T, U foundation.Numeric](
+	vectorAAddr, vectorBAddr, newVectorAddr memcore.MarkRaw,
+) {
+	vectorAdd[T, U, float64](vectorAAddr, vectorBAddr, newVectorAddr)
+}
+
 // -------------------------- PRIVATE HELPERS
+
+//go:inline
+func vectorAdd[T, U foundation.Numeric, P ~float32 | ~float64](
+	vectorAAddr, vectorBAddr, newVectorAddr memcore.MarkRaw,
+) {
+	srcBase, srcInstance := memcore.MemcoreMarkDereferenceObjectAlt[Vector[T]](vectorAAddr)
+	addBase, addInstance := memcore.MemcoreMarkDereferenceObjectAlt[Vector[U]](vectorBAddr)
+	dstBase, dstInstance := memcore.MemcoreMarkDereferenceObjectAlt[Vector[P]](newVectorAddr)
+
+	if !(srcInstance.capacity == dstInstance.capacity && srcInstance.capacity == addInstance.capacity && dstInstance.capacity == addInstance.capacity) {
+		panic(fmt.Errorf("cannot add vectors with different capacities (src=%d,add=%d,dest=%d)", srcInstance.capacity, addInstance.capacity, dstInstance.capacity))
+	}
+
+	capacity := srcInstance.capacity
+	srcItemSize := uintptr(srcInstance.itemSize)
+	addItemSize := uintptr(addInstance.itemSize)
+	dstItemSize := uintptr(dstInstance.itemSize)
+
+	srcData := vectorComputeDataAddr(srcInstance, srcBase)
+	addData := vectorComputeDataAddr(addInstance, addBase)
+	dstData := vectorComputeDataAddr(dstInstance, dstBase)
+
+	i := uint64(0)
+	for ; i+7 < capacity; i += 8 {
+		vectorAddAtIdx[T, U, P](srcData, addData, dstData, srcItemSize, addItemSize, dstItemSize, uintptr(i+0))
+		vectorAddAtIdx[T, U, P](srcData, addData, dstData, srcItemSize, addItemSize, dstItemSize, uintptr(i+1))
+		vectorAddAtIdx[T, U, P](srcData, addData, dstData, srcItemSize, addItemSize, dstItemSize, uintptr(i+2))
+		vectorAddAtIdx[T, U, P](srcData, addData, dstData, srcItemSize, addItemSize, dstItemSize, uintptr(i+3))
+		vectorAddAtIdx[T, U, P](srcData, addData, dstData, srcItemSize, addItemSize, dstItemSize, uintptr(i+4))
+		vectorAddAtIdx[T, U, P](srcData, addData, dstData, srcItemSize, addItemSize, dstItemSize, uintptr(i+5))
+		vectorAddAtIdx[T, U, P](srcData, addData, dstData, srcItemSize, addItemSize, dstItemSize, uintptr(i+6))
+		vectorAddAtIdx[T, U, P](srcData, addData, dstData, srcItemSize, addItemSize, dstItemSize, uintptr(i+7))
+	}
+
+	for ; i < capacity; i++ {
+		vectorAddAtIdx[T, U, P](srcData, addData, dstData, srcItemSize, addItemSize, dstItemSize, uintptr(i))
+	}
+}
+
+//go:inline
+//go:nosplit
+func vectorAddAtIdx[T, U foundation.Numeric, P ~float32 | ~float64](
+	srcData, addData, dstData unsafe.Pointer,
+	srcItemSize, addItemSize, dstItemSize uintptr,
+	idx uintptr,
+) {
+	v := P(float64(*(*T)(unsafe.Add(srcData, idx*srcItemSize))) + float64(*(*U)(unsafe.Add(addData, idx*addItemSize))))
+	*(*P)(unsafe.Add(dstData, idx*dstItemSize)) = v
+}
 
 //go:inline
 func vectorClamp[T foundation.Numeric](vectorAddr memcore.MarkRaw, min, max T) {
@@ -568,12 +633,16 @@ func vectorClampAtIdx[T foundation.Numeric](
 }
 
 //go:inline
-func vectorScale[T, S foundation.Numeric, U ~float32 | ~float64](
+func vectorScale[T, S foundation.Numeric, P ~float32 | ~float64](
 	vectorAddr memcore.MarkRaw, newVectorAddr memcore.MarkRaw,
 	scalar S,
 ) {
 	srcBase, srcInstance := memcore.MemcoreMarkDereferenceObjectAlt[Vector[T]](vectorAddr)
-	dstBase, dstInstance := memcore.MemcoreMarkDereferenceObjectAlt[Vector[U]](newVectorAddr)
+	dstBase, dstInstance := memcore.MemcoreMarkDereferenceObjectAlt[Vector[P]](newVectorAddr)
+
+	if srcInstance.capacity != dstInstance.capacity {
+		panic(fmt.Errorf("cannot scale vectors with different capacities (src=%d,dest=%d)", srcInstance.capacity, dstInstance.capacity))
+	}
 
 	capacity := srcInstance.capacity
 	srcItemSize := uintptr(srcInstance.itemSize)
@@ -584,37 +653,37 @@ func vectorScale[T, S foundation.Numeric, U ~float32 | ~float64](
 
 	i := uint64(0)
 	for ; i+7 < capacity; i += 8 {
-		vectorScaleAtIdx[T, S, U](srcData, dstData, srcItemSize, dstItemSize, uintptr(i+0), scalar)
-		vectorScaleAtIdx[T, S, U](srcData, dstData, srcItemSize, dstItemSize, uintptr(i+1), scalar)
-		vectorScaleAtIdx[T, S, U](srcData, dstData, srcItemSize, dstItemSize, uintptr(i+2), scalar)
-		vectorScaleAtIdx[T, S, U](srcData, dstData, srcItemSize, dstItemSize, uintptr(i+3), scalar)
-		vectorScaleAtIdx[T, S, U](srcData, dstData, srcItemSize, dstItemSize, uintptr(i+4), scalar)
-		vectorScaleAtIdx[T, S, U](srcData, dstData, srcItemSize, dstItemSize, uintptr(i+5), scalar)
-		vectorScaleAtIdx[T, S, U](srcData, dstData, srcItemSize, dstItemSize, uintptr(i+6), scalar)
-		vectorScaleAtIdx[T, S, U](srcData, dstData, srcItemSize, dstItemSize, uintptr(i+7), scalar)
+		vectorScaleAtIdx[T, S, P](srcData, dstData, srcItemSize, dstItemSize, uintptr(i+0), scalar)
+		vectorScaleAtIdx[T, S, P](srcData, dstData, srcItemSize, dstItemSize, uintptr(i+1), scalar)
+		vectorScaleAtIdx[T, S, P](srcData, dstData, srcItemSize, dstItemSize, uintptr(i+2), scalar)
+		vectorScaleAtIdx[T, S, P](srcData, dstData, srcItemSize, dstItemSize, uintptr(i+3), scalar)
+		vectorScaleAtIdx[T, S, P](srcData, dstData, srcItemSize, dstItemSize, uintptr(i+4), scalar)
+		vectorScaleAtIdx[T, S, P](srcData, dstData, srcItemSize, dstItemSize, uintptr(i+5), scalar)
+		vectorScaleAtIdx[T, S, P](srcData, dstData, srcItemSize, dstItemSize, uintptr(i+6), scalar)
+		vectorScaleAtIdx[T, S, P](srcData, dstData, srcItemSize, dstItemSize, uintptr(i+7), scalar)
 	}
 
 	for ; i < capacity; i++ {
-		vectorScaleAtIdx[T, S, U](srcData, dstData, srcItemSize, dstItemSize, uintptr(i), scalar)
+		vectorScaleAtIdx[T, S, P](srcData, dstData, srcItemSize, dstItemSize, uintptr(i), scalar)
 	}
 }
 
 //go:inline
 //go:nosplit
-func vectorScaleAtIdx[T, S foundation.Numeric, U ~float32 | ~float64](
+func vectorScaleAtIdx[T, S foundation.Numeric, P ~float32 | ~float64](
 	srcData, dstData unsafe.Pointer,
 	srcItemSize, dstItemSize uintptr,
 	idx uintptr,
 	scalar S,
 ) {
-	v := U(float64(*(*T)(unsafe.Add(srcData, idx*srcItemSize))) * float64(scalar))
-	*(*U)(unsafe.Add(dstData, idx*dstItemSize)) = v
+	v := P(float64(*(*T)(unsafe.Add(srcData, idx*srcItemSize))) * float64(scalar))
+	*(*P)(unsafe.Add(dstData, idx*dstItemSize)) = v
 }
 
 //go:inline
-func vectorDotProduct[T, U foundation.Numeric, V ~float32 | ~float64](
+func vectorDotProduct[T, U foundation.Numeric, P ~float32 | ~float64](
 	vectorAAddr, vectorBAddr memcore.MarkRaw,
-) V {
+) P {
 	vectorABaseAddr, vectorA := memcore.MemcoreMarkDereferenceObjectAlt[Vector[T]](vectorAAddr)
 	vectorBBaseAddr, vectorB := memcore.MemcoreMarkDereferenceObjectAlt[Vector[U]](vectorBAddr)
 
@@ -649,7 +718,7 @@ func vectorDotProduct[T, U foundation.Numeric, V ~float32 | ~float64](
 		dotProduct += vectorComputeDotProductAtIdx[T, U](vectorADataAddr, vectorBDataAddr, vectorAItemSize, vectorBItemSize, uintptr(i))
 	}
 
-	return V(dotProduct)
+	return P(dotProduct)
 }
 
 //go:inline
