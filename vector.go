@@ -511,7 +511,61 @@ func VectorScaleF64[T, S foundation.Numeric](
 	vectorScale[T, S, float64](currentVectorAddr, newVectorAddr, scalar)
 }
 
+// VectorClamp transforms the vector in such a way that each element is between
+// min and max.
+func VectorClamp[T foundation.Numeric](
+	vector memcore.MarkRaw,
+	min, max T,
+) {
+	vectorClamp(vector, min, max)
+}
+
 // -------------------------- PRIVATE HELPERS
+
+//go:inline
+func vectorClamp[T foundation.Numeric](vectorAddr memcore.MarkRaw, min, max T) {
+	vectorBase, vectorInstance := memcore.MemcoreMarkDereferenceObjectAlt[Vector[T]](vectorAddr)
+	capacity := vectorInstance.capacity
+
+	vectorData := vectorComputeDataAddr(vectorInstance, vectorBase)
+	vectorItemSize := uintptr(vectorInstance.itemSize)
+
+	i := uint64(0)
+	for ; i+7 < capacity; i += 8 {
+		vectorClampAtIdx(vectorData, vectorItemSize, uintptr(i+0), min, max)
+		vectorClampAtIdx(vectorData, vectorItemSize, uintptr(i+1), min, max)
+		vectorClampAtIdx(vectorData, vectorItemSize, uintptr(i+2), min, max)
+		vectorClampAtIdx(vectorData, vectorItemSize, uintptr(i+3), min, max)
+		vectorClampAtIdx(vectorData, vectorItemSize, uintptr(i+4), min, max)
+		vectorClampAtIdx(vectorData, vectorItemSize, uintptr(i+5), min, max)
+		vectorClampAtIdx(vectorData, vectorItemSize, uintptr(i+6), min, max)
+		vectorClampAtIdx(vectorData, vectorItemSize, uintptr(i+7), min, max)
+	}
+
+	for ; i < capacity; i++ {
+		vectorClampAtIdx(vectorData, vectorItemSize, uintptr(i), min, max)
+	}
+}
+
+//go:inline
+//go:nosplit
+func vectorClampAtIdx[T foundation.Numeric](
+	vectorData unsafe.Pointer,
+	vectorItemSize uintptr,
+	idx uintptr,
+	min, max T,
+) {
+	itemPtr := unsafe.Add(vectorData, idx*vectorItemSize)
+	val := *(*T)(itemPtr)
+
+	if val < min {
+		val = min
+	} else if val > max {
+		val = max
+	}
+
+	*(*T)(itemPtr) = val
+}
 
 //go:inline
 func vectorScale[T, S foundation.Numeric, U ~float32 | ~float64](
