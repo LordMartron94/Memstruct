@@ -609,6 +609,26 @@ func VectorAddF64[T, U foundation.Numeric](
 	})
 }
 
+// VectorSubtractF32 subtracts the values of Vector B from Vector A, resulting in Vector C at newVectorAddr.
+// It does so in float32 precision.
+func VectorSubtractF32[T, U foundation.Numeric](
+	vectorAAddr, vectorBAddr, newVectorAddr memcore.MarkRaw,
+) {
+	vectorBinaryExecute(vectorAAddr, vectorBAddr, newVectorAddr, func(a T, b U) float32 {
+		return float32(a) - float32(b)
+	})
+}
+
+// VectorSubtractF64 subtracts the values of Vector B from Vector A, resulting in Vector C at newVectorAddr.
+// It does so in float364precision.
+func VectorSubtractF64[T, U foundation.Numeric](
+	vectorAAddr, vectorBAddr, newVectorAddr memcore.MarkRaw,
+) {
+	vectorBinaryExecute(vectorAAddr, vectorBAddr, newVectorAddr, func(a T, b U) float64 {
+		return float64(a) - float64(b)
+	})
+}
+
 // -------------------------- PRIVATE HELPERS
 
 //go:inline
