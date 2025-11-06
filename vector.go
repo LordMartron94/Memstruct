@@ -464,23 +464,23 @@ func VectorMagnitudeF64[T foundation.Numeric](vector memcore.MarkRaw) float64 {
 }
 
 // VectorNormalizedF32 normalizes the vector with float32 precision such that its magnitude is 1.
-// It returns the mark to the new normalized vector instance.
 func VectorNormalizedF32[T foundation.Numeric](
 	currentVector memcore.MarkRaw,
 	newVectorAddr memcore.MarkRaw,
 ) {
 	magnitude := VectorMagnitudeF32[T](currentVector)
-	vectorNormalize[T](currentVector, newVectorAddr, magnitude)
+	inv := 1.0 / magnitude
+	vectorScale[T, float32, float32](currentVector, newVectorAddr, inv)
 }
 
 // VectorNormalizedF64 normalizes the vector with float64 precision such that its magnitude is 1.
-// It returns the mark to the new normalized vector instance.
 func VectorNormalizedF64[T foundation.Numeric](
 	currentVector memcore.MarkRaw,
 	newVectorAddr memcore.MarkRaw,
 ) {
 	magnitude := VectorMagnitudeF64[T](currentVector)
-	vectorNormalize[T](currentVector, newVectorAddr, magnitude)
+	inv := 1.0 / magnitude
+	vectorScale[T, float64, float64](currentVector, newVectorAddr, inv)
 }
 
 // VectorDotProductF32 computes the dot product between two vectors in float32 precision.
@@ -495,7 +495,67 @@ func VectorDotProductF64[T, U foundation.Numeric](vectorAAddr, vectorBAddr memco
 	return vectorDotProduct[T, U, float64](vectorAAddr, vectorBAddr)
 }
 
+// VectorScaleF32 scales the vector with float32 precision such each value is multiplied by the scalar.
+func VectorScaleF32[T, S foundation.Numeric](
+	currentVectorAddr, newVectorAddr memcore.MarkRaw,
+	scalar S,
+) {
+	vectorScale[T, S, float32](currentVectorAddr, newVectorAddr, scalar)
+}
+
+// VectorScaleF64 scales the vector with float64 precision such each value is multiplied by the scalar.
+func VectorScaleF64[T, S foundation.Numeric](
+	currentVectorAddr, newVectorAddr memcore.MarkRaw,
+	scalar S,
+) {
+	vectorScale[T, S, float64](currentVectorAddr, newVectorAddr, scalar)
+}
+
 // -------------------------- PRIVATE HELPERS
+
+//go:inline
+func vectorScale[T, S foundation.Numeric, U ~float32 | ~float64](
+	vectorAddr memcore.MarkRaw, newVectorAddr memcore.MarkRaw,
+	scalar S,
+) {
+	srcBase, srcInstance := memcore.MemcoreMarkDereferenceObjectAlt[Vector[T]](vectorAddr)
+	dstBase, dstInstance := memcore.MemcoreMarkDereferenceObjectAlt[Vector[U]](newVectorAddr)
+
+	capacity := srcInstance.capacity
+	srcItemSize := uintptr(srcInstance.itemSize)
+	dstItemSize := uintptr(dstInstance.itemSize)
+
+	srcData := vectorComputeDataAddr(srcInstance, srcBase)
+	dstData := vectorComputeDataAddr(dstInstance, dstBase)
+
+	i := uint64(0)
+	for ; i+7 < capacity; i += 8 {
+		vectorScaleAtIdx[T, S, U](srcData, dstData, srcItemSize, dstItemSize, uintptr(i+0), scalar)
+		vectorScaleAtIdx[T, S, U](srcData, dstData, srcItemSize, dstItemSize, uintptr(i+1), scalar)
+		vectorScaleAtIdx[T, S, U](srcData, dstData, srcItemSize, dstItemSize, uintptr(i+2), scalar)
+		vectorScaleAtIdx[T, S, U](srcData, dstData, srcItemSize, dstItemSize, uintptr(i+3), scalar)
+		vectorScaleAtIdx[T, S, U](srcData, dstData, srcItemSize, dstItemSize, uintptr(i+4), scalar)
+		vectorScaleAtIdx[T, S, U](srcData, dstData, srcItemSize, dstItemSize, uintptr(i+5), scalar)
+		vectorScaleAtIdx[T, S, U](srcData, dstData, srcItemSize, dstItemSize, uintptr(i+6), scalar)
+		vectorScaleAtIdx[T, S, U](srcData, dstData, srcItemSize, dstItemSize, uintptr(i+7), scalar)
+	}
+
+	for ; i < capacity; i++ {
+		vectorScaleAtIdx[T, S, U](srcData, dstData, srcItemSize, dstItemSize, uintptr(i), scalar)
+	}
+}
+
+//go:inline
+//go:nosplit
+func vectorScaleAtIdx[T, S foundation.Numeric, U ~float32 | ~float64](
+	srcData, dstData unsafe.Pointer,
+	srcItemSize, dstItemSize uintptr,
+	idx uintptr,
+	scalar S,
+) {
+	v := U(float64(*(*T)(unsafe.Add(srcData, idx*srcItemSize))) * float64(scalar))
+	*(*U)(unsafe.Add(dstData, idx*dstItemSize)) = v
+}
 
 //go:inline
 func vectorDotProduct[T, U foundation.Numeric, V ~float32 | ~float64](
@@ -548,52 +608,6 @@ func vectorComputeDotProductAtIdx[T, U foundation.Numeric](
 	a := float64(*(*T)(unsafe.Add(vectorADataAddr, idx*vectorAItemSize)))
 	b := float64(*(*U)(unsafe.Add(vectorBDataAddr, idx*vectorBItemSize)))
 	return a * b
-}
-
-//go:inline
-func vectorNormalize[T foundation.Numeric, U ~float32 | ~float64](
-	vectorAddr memcore.MarkRaw, newVectorAddr memcore.MarkRaw,
-	magnitude U,
-) {
-	inv := 1.0 / magnitude
-
-	srcBase, srcInstance := memcore.MemcoreMarkDereferenceObjectAlt[Vector[T]](vectorAddr)
-	dstBase, dstInstance := memcore.MemcoreMarkDereferenceObjectAlt[Vector[U]](newVectorAddr)
-
-	capacity := srcInstance.capacity
-	srcItemSize := uintptr(srcInstance.itemSize)
-	dstItemSize := uintptr(dstInstance.itemSize)
-
-	srcData := vectorComputeDataAddr(srcInstance, srcBase)
-	dstData := vectorComputeDataAddr(dstInstance, dstBase)
-
-	i := uint64(0)
-	for ; i+7 < capacity; i += 8 {
-		vectorNormalizeAtIdx[T](srcData, dstData, srcItemSize, dstItemSize, uintptr(i+0), inv)
-		vectorNormalizeAtIdx[T](srcData, dstData, srcItemSize, dstItemSize, uintptr(i+1), inv)
-		vectorNormalizeAtIdx[T](srcData, dstData, srcItemSize, dstItemSize, uintptr(i+2), inv)
-		vectorNormalizeAtIdx[T](srcData, dstData, srcItemSize, dstItemSize, uintptr(i+3), inv)
-		vectorNormalizeAtIdx[T](srcData, dstData, srcItemSize, dstItemSize, uintptr(i+4), inv)
-		vectorNormalizeAtIdx[T](srcData, dstData, srcItemSize, dstItemSize, uintptr(i+5), inv)
-		vectorNormalizeAtIdx[T](srcData, dstData, srcItemSize, dstItemSize, uintptr(i+6), inv)
-		vectorNormalizeAtIdx[T](srcData, dstData, srcItemSize, dstItemSize, uintptr(i+7), inv)
-	}
-
-	for ; i < capacity; i++ {
-		vectorNormalizeAtIdx[T](srcData, dstData, srcItemSize, dstItemSize, uintptr(i), inv)
-	}
-}
-
-//go:inline
-//go:nosplit
-func vectorNormalizeAtIdx[T foundation.Numeric, U ~float32 | ~float64](
-	srcData, dstData unsafe.Pointer,
-	srcItemSize, dstItemSize uintptr,
-	idx uintptr,
-	invMag U,
-) {
-	v := U(float64(*(*T)(unsafe.Add(srcData, idx*srcItemSize))) * float64(invMag))
-	*(*U)(unsafe.Add(dstData, idx*dstItemSize)) = v
 }
 
 //go:inline
