@@ -3,31 +3,26 @@ package memstruct
 import (
 	"fmt"
 	"foundation"
-	"math"
 	"memcore"
 	"strings"
 	"unsafe"
 )
 
+// Vector is structurally equivalent to Array except specialized for numerics.
+// All Array functions work as well for the Vector.
+// For convenience, most, if not all, of these are wrapped under a facade with the Vector prefix.
+type Vector[T foundation.Numeric] Array[T]
+
+// VectorView represents a view around a vector.
+// It can be readonly and/or a subset within the vector.
+type VectorView[T foundation.Numeric] ArrayView[T]
+
 func VectorRequiredBytesGet[T foundation.Numeric](capacity uint64) uint64 {
-	headerSize := memcore.SizeOf[Vector[T]]()
-	itemSize := memcore.SizeOf[T]()
-	return headerSize + itemSize*capacity
+	return ArrayRequiredBytesGet[T](capacity)
 }
 
 func VectorRequiredAlignmentGet[T foundation.Numeric]() uint64 {
-	return max(memcore.AlignOf[T](), memcore.AlignOf[Vector[T]]())
-}
-
-// Vector is a custom vector implementation built on top of memcore.
-type Vector[T foundation.Numeric] struct {
-	dataAddrOffset uintptr
-	capacity       uint64
-
-	setFnID memcore.FunctionID
-
-	itemSize        uint64
-	itemSizeUintPtr uintptr
+	return ArrayRequiredAlignmentGet[T]()
 }
 
 func (v *Vector[T]) String() string {
@@ -45,7 +40,7 @@ func (v *Vector[T]) String() string {
 		if i > 0 {
 			sb.WriteString(", ")
 		}
-		val := *(*T)(unsafe.Add(dataAddr, uintptr(i*v.itemSize)))
+		val := *(*T)(unsafe.Add(dataAddr, uintptr(i)*v.itemSize))
 		fmt.Fprintf(&sb, "%v", val)
 	}
 
@@ -58,60 +53,57 @@ func (v *Vector[T]) String() string {
 //
 // ⚠️ capacity is in elements, not bytes.
 func VectorInitializeAt[T foundation.Numeric](vectorAddr memcore.MarkRaw, capacity uint64) {
-	headerSize := memcore.SizeOf[Vector[T]]()
-
-	itemSize := memcore.SizeOf[T]()
-	vectorPtr := memcore.MemcoreMarkDereferenceObject[Vector[T]](vectorAddr)
-	*vectorPtr = Vector[T]{
-		dataAddrOffset:  uintptr(headerSize),
-		capacity:        capacity,
-		itemSize:        itemSize,
-		itemSizeUintPtr: uintptr(itemSize),
-	}
-
-	vectorPtr.setFnID = memcore.MemcoreFunctionRegisterTyped(
-		getMovementFunc[T](itemSize),
-	)
+	ArrayInitializeAt[T](vectorAddr, capacity)
 }
 
 // VectorSnapshotCreate creates a deep copy of an vector at a new memory location
 // defined by the destination pointer (which points to the start of the new vector header).
 // It copies both the header and the data that follow it, maintaining the same relative layout.
 func VectorSnapshotCreate[T foundation.Numeric](dest memcore.MarkRaw, instance memcore.MarkRaw) memcore.MarkRaw {
-	vectorPtr := memcore.MemcoreMarkDereferenceObject[Vector[T]](instance)
-	totalSize := VectorRequiredBytesGet[T](vectorPtr.capacity)
-
-	srcAddr := memcore.MemcoreMarkDereference(instance)
-	dstAddr := memcore.MemcoreMarkDereference(dest)
-
-	memcore.MemoryMoveNoHeapPointers(dstAddr, srcAddr, uintptr(totalSize))
-
-	return dest
+	return ArraySnapshotCreate[T](dest, instance)
 }
 
 // VectorSnapshotRestore replaces the entire memory block of one vector
 // (header + data) with that of another vector of the same type and capacity.
 // Both vectors must live in manual memory managed by memcore.
 func VectorSnapshotRestore[T foundation.Numeric](dest, src memcore.MarkRaw) error {
-	dstHeader := memcore.MemcoreMarkDereferenceObject[Vector[T]](dest)
-	srcHeader := memcore.MemcoreMarkDereferenceObject[Vector[T]](src)
+	return ArraySnapshotRestore[T](dest, src)
+}
 
-	if dstHeader.capacity != srcHeader.capacity {
-		return fmt.Errorf("cannot restore snapshot: unequal capacities (dest=%v, src=%v)", dstHeader.capacity, srcHeader.capacity)
-	}
+// VectorHeaderClone clones the header to the vector data.
+// It will not move memory at all.
+func VectorHeaderClone[T foundation.Numeric](dest, src memcore.MarkRaw) {
+	ArrayHeaderClone[T](dest, src)
+}
 
-	if dest == src {
-		return nil
-	}
+// VectorHeaderSizeBytesGet returns the required bytes for the Vector header.
+//
+//go:inline
+func VectorHeaderSizeBytesGet[T foundation.Numeric]() uint64 {
+	return ArrayHeaderSizeBytesGet[T]()
+}
 
-	totalBytes := VectorRequiredBytesGet[T](dstHeader.capacity)
+// VectorHeaderAlignmentGet returns the required alignment for the Vector header.
+//
+//go:inline
+func VectorHeaderAlignmentGet[T foundation.Numeric]() uint64 {
+	return ArrayHeaderAlignmentGet[T]()
+}
 
-	dstAddr := memcore.MemcoreMarkDereference(dest)
-	srcAddr := memcore.MemcoreMarkDereference(src)
+// VectorViewGet produces a view over a vector that is potentially a subset and/or readonly.
+// It panics if from or to are invalid.
+//
+//go:inline
+func VectorViewGet[T foundation.Numeric](array memcore.MarkRaw, from, to uint64, readonly bool) VectorView[T] {
+	return VectorView[T](ArrayViewGet[T](array, from, to, readonly))
+}
 
-	memcore.MemoryMoveNoHeapPointers(dstAddr, srcAddr, uintptr(totalBytes))
-
-	return nil
+// VectorViewGetUnsafe produces a view over a vector that is potentially a subset and/or readonly.
+// It does no validation of bounds.
+//
+//go:inline
+func VectorViewGetUnsafe[T foundation.Numeric](array memcore.MarkRaw, from, to uint64, readonly bool) VectorView[T] {
+	return VectorView[T](ArrayViewGetUnsafe[T](array, from, to, readonly))
 }
 
 // VectorCapacityGet returns the total amount of elements that can be stored.
@@ -119,8 +111,7 @@ func VectorSnapshotRestore[T foundation.Numeric](dest, src memcore.MarkRaw) erro
 //go:nosplit
 //go:inline
 func VectorCapacityGet[T foundation.Numeric](vector memcore.MarkRaw) uint64 {
-	instance := memcore.MemcoreMarkDereferenceObject[Vector[T]](vector)
-	return instance.capacity
+	return ArrayCapacityGet[T](vector)
 }
 
 // VectorItemGetAt returns T at idx within the vector.
@@ -129,15 +120,7 @@ func VectorCapacityGet[T foundation.Numeric](vector memcore.MarkRaw) uint64 {
 //go:nosplit
 //go:inline
 func VectorItemGetAt[T foundation.Numeric](vector memcore.MarkRaw, idx uint64) (T, error) {
-	instance := memcore.MemcoreMarkDereferenceObject[Vector[T]](vector)
-	baseAddr := memcore.MemcoreMarkDereference(vector)
-
-	if error := vectorGuaranteeIdxValidity(instance, idx); error != nil {
-		var zero T
-		return zero, error
-	}
-
-	return *(*T)(vectorGetPtrAtIdx(instance, baseAddr, idx)), nil
+	return ArrayItemGetAt[T](vector, idx)
 }
 
 // VectorItemGetAtUnsafe returns T at idx within the vector.
@@ -145,9 +128,7 @@ func VectorItemGetAt[T foundation.Numeric](vector memcore.MarkRaw, idx uint64) (
 //
 //go:inline
 func VectorItemGetAtUnsafe[T foundation.Numeric](vector memcore.MarkRaw, idx uint64) T {
-	instance := memcore.MemcoreMarkDereferenceObject[Vector[T]](vector)
-	baseAddr := memcore.MemcoreMarkDereference(vector)
-	return *(*T)(vectorGetPtrAtIdx(instance, baseAddr, idx))
+	return ArrayItemGetAtUnsafe[T](vector, idx)
 }
 
 // VectorItemPtrGetAt returns a pointer to T at idx within the vector.
@@ -159,13 +140,7 @@ func VectorItemGetAtUnsafe[T foundation.Numeric](vector memcore.MarkRaw, idx uin
 //go:nosplit
 //go:inline
 func VectorItemPtrGetAt[T foundation.Numeric](vector memcore.MarkRaw, idx uint64) (*T, error) {
-	instance := memcore.MemcoreMarkDereferenceObject[Vector[T]](vector)
-	baseAddr := memcore.MemcoreMarkDereference(vector)
-	if error := vectorGuaranteeIdxValidity(instance, idx); error != nil {
-		return nil, error
-	}
-
-	return (*T)(vectorGetPtrAtIdx(instance, baseAddr, idx)), nil
+	return ArrayItemPtrGetAt[T](vector, idx)
 }
 
 // VectorItemPtrGetAtUnsafe returns a pointer to T at idx within the vector.
@@ -176,9 +151,32 @@ func VectorItemPtrGetAt[T foundation.Numeric](vector memcore.MarkRaw, idx uint64
 //
 //go:inline
 func VectorItemPtrGetAtUnsafe[T foundation.Numeric](vector memcore.MarkRaw, idx uint64) *T {
-	instance := memcore.MemcoreMarkDereferenceObject[Vector[T]](vector)
-	baseAddr := memcore.MemcoreMarkDereference(vector)
-	return (*T)(vectorGetPtrAtIdx(instance, baseAddr, idx))
+	return ArrayItemPtrGetAtUnsafe[T](vector, idx)
+}
+
+// VectorDataPtrGet returns the current pointer to the underlying data storage in memory.
+// This value CAN change if the underlying memory region changes.
+// Not stable, so do not store.
+//
+//go:inline
+func VectorDataPtrGet[T foundation.Numeric](array memcore.MarkRaw) unsafe.Pointer {
+	return ArrayDataPtrGet[T](array)
+}
+
+// VectorByteOffsetGetAt returns the offset relative to the memory region for this idx.
+// Panics if the idx is invalid.
+//
+//go:inline
+func VectorByteOffsetGetAt[T foundation.Numeric](array memcore.MarkRaw, idx uint64) uintptr {
+	return ArrayByteOffsetGetAt[T](array, idx)
+}
+
+// VectorByteOffsetGetAtUnsafe returns the offset relative to the memory region for this idx.
+// Does no bounds checks.
+//
+//go:inline
+func VectorByteOffsetGetAtUnsafe[T foundation.Numeric](array memcore.MarkRaw, idx uint64) uintptr {
+	return ArrayByteOffsetGetAtUnsafe[T](array, idx)
 }
 
 // VectorSetAt sets idx of vector to value T.
@@ -187,17 +185,7 @@ func VectorItemPtrGetAtUnsafe[T foundation.Numeric](vector memcore.MarkRaw, idx 
 //go:nosplit
 //go:inline
 func VectorSetAt[T foundation.Numeric](vector memcore.MarkRaw, idx uint64, value T) error {
-	instance := memcore.MemcoreMarkDereferenceObject[Vector[T]](vector)
-	if error := vectorGuaranteeIdxValidity(instance, idx); error != nil {
-		return error
-	}
-
-	baseAddr := memcore.MemcoreMarkDereference(vector)
-	itemPtr := vectorGetPtrAtIdx(instance, baseAddr, idx)
-
-	memcore.MemcoreFunctionRetrieveTyped[setFn[T]](instance.setFnID)(itemPtr, value)
-
-	return nil
+	return ArraySetAt(vector, idx, value)
 }
 
 // VectorSetAtUnsafe sets idx of vector to value T.
@@ -206,35 +194,68 @@ func VectorSetAt[T foundation.Numeric](vector memcore.MarkRaw, idx uint64, value
 //go:nosplit
 //go:inline
 func VectorSetAtUnsafe[T foundation.Numeric](vector memcore.MarkRaw, idx uint64, value T) {
-	instance := memcore.MemcoreMarkDereferenceObject[Vector[T]](vector)
+	ArraySetAtUnsafe(vector, idx, value)
+}
 
-	baseAddr := memcore.MemcoreMarkDereference(vector)
-	itemPtr := vectorGetPtrAtIdx(instance, baseAddr, idx)
+// VectorSetAll sets all values within the vector to value T.
+//
+//go:inline
+func VectorSetAll[T foundation.Numeric](vector memcore.MarkRaw, v T) {
+	ArraySetAll(vector, v)
+}
 
-	memcore.MemcoreFunctionRetrieveTyped[setFn[T]](instance.setFnID)(itemPtr, value)
+// VectorZeroAll sets all values within the Vector to its zero value.
+// This is different from clearing the memory to 0.
+//
+//go:inline
+func VectorZeroAll[T foundation.Numeric](vector memcore.MarkRaw) {
+	ArrayZeroAll[T](vector)
+}
+
+// VectorForEachUnsafe calls a function for every element in the vector.
+//
+//go:inline
+func VectorForEachUnsafe[T foundation.Numeric](vector memcore.MarkRaw, fn func(ptr unsafe.Pointer, idx uint64)) {
+	ArrayForEachUnsafe[T](vector, fn)
+}
+
+// VectorStrideForEachUnsafe calls a function for every element in the vector.
+// It visits every stride-th element.
+//
+//go:inline
+func VectorStrideForEachUnsafe[T foundation.Numeric](array memcore.MarkRaw, fn func(ptr unsafe.Pointer, idx uint64), stride uint64) {
+	ArrayStrideForEachUnsafe[T](array, fn, stride)
+}
+
+// VectorIterate allows you to iterate over the vector efficiently.
+// It provides a method to say which next element you need.
+// The next function returns true when your requested n exceeds the capacity.
+//
+//go:inline
+func VectorIterate[T foundation.Numeric](
+	vector memcore.MarkRaw,
+	fn func(ptr unsafe.Pointer, idx uint64, next func(n uint64) (unsafe.Pointer, uint64, bool)),
+) {
+	ArrayIterate[T](vector, fn)
+}
+
+// VectorIterateUnsafe allows you to iterate over the vector efficiently.
+// It provides a method to say which next element you need.
+// The next function does no bounds checking. Safety must be guaranteed by the client.
+//
+//go:inline
+func VectorIterateUnsafe[T any](
+	vector memcore.MarkRaw,
+	fn func(ptr unsafe.Pointer, idx uint64, next func(n uint64) (unsafe.Pointer, uint64)),
+) {
+	ArrayIterateUnsafe[T](vector, fn)
 }
 
 // VectorReplaceInternal replaces srcIdx with the value at destIdx efficiently.
 //
 //go:inline
 func VectorReplaceInternal[T foundation.Numeric](vector memcore.MarkRaw, srcIdx, destIdx uint64) error {
-	instance := memcore.MemcoreMarkDereferenceObject[Vector[T]](vector)
-	if error := vectorGuaranteeIdxValidity(instance, srcIdx); error != nil {
-		return error
-	}
-
-	if error := vectorGuaranteeIdxValidity(instance, destIdx); error != nil {
-		return error
-	}
-
-	baseAddr := memcore.MemcoreMarkDereference(vector)
-
-	srcPtr := vectorGetPtrAtIdx(instance, baseAddr, srcIdx)
-	dstPtr := vectorGetPtrAtIdx(instance, baseAddr, destIdx)
-
-	memcore.MemoryMoveNoHeapPointers(dstPtr, srcPtr, instance.itemSizeUintPtr)
-
-	return nil
+	return ArrayReplaceInternal[T](vector, srcIdx, destIdx)
 }
 
 // VectorReplaceInternalUnsafe replaces srcIdx with the value at destIdx efficiently.
@@ -243,12 +264,7 @@ func VectorReplaceInternal[T foundation.Numeric](vector memcore.MarkRaw, srcIdx,
 //
 //go:inline
 func VectorReplaceInternalUnsafe[T foundation.Numeric](vector memcore.MarkRaw, srcIdx, destIdx uint64) {
-	instance := memcore.MemcoreMarkDereferenceObject[Vector[T]](vector)
-	baseAddr := memcore.MemcoreMarkDereference(vector)
-	srcPtr := vectorGetPtrAtIdx(instance, baseAddr, srcIdx)
-	dstPtr := vectorGetPtrAtIdx(instance, baseAddr, destIdx)
-
-	memcore.MemoryMoveNoHeapPointers(dstPtr, srcPtr, instance.itemSizeUintPtr)
+	ArrayReplaceInternalUnsafe[T](vector, srcIdx, destIdx)
 }
 
 // VectorShiftRight shifts a contiguous range of elements in the vector
@@ -273,16 +289,7 @@ func VectorReplaceInternalUnsafe[T foundation.Numeric](vector memcore.MarkRaw, s
 //go:nosplit
 //go:inline
 func VectorShiftRight[T foundation.Numeric](vector memcore.MarkRaw, from, to, count uint64) error {
-	instance := memcore.MemcoreMarkDereferenceObject[Vector[T]](vector)
-	if from >= instance.capacity || to >= instance.capacity {
-		return fmt.Errorf("invalid range: from=%d to=%d capacity=%d", from, to, instance.capacity)
-	}
-	if count == 0 || from >= to {
-		return nil
-	}
-
-	VectorShiftRightUnsafe[T](vector, from, to, count)
-	return nil
+	return ArrayShiftRight[T](vector, from, to, count)
 }
 
 // VectorShiftRightUnsafe shifts a contiguous range of elements in the vector
@@ -308,13 +315,7 @@ func VectorShiftRight[T foundation.Numeric](vector memcore.MarkRaw, from, to, co
 //go:nosplit
 //go:inline
 func VectorShiftRightUnsafe[T foundation.Numeric](vector memcore.MarkRaw, from, to, count uint64) {
-	instance := memcore.MemcoreMarkDereferenceObject[Vector[T]](vector)
-	baseAddr := memcore.MemcoreMarkDereference(vector)
-	elemSize := instance.itemSizeUintPtr
-	srcPtr := vectorGetPtrAtIdx(instance, baseAddr, from)
-	dstPtr := vectorGetPtrAtIdx(instance, baseAddr, from+count)
-
-	memcore.MemoryMoveNoHeapPointers(dstPtr, srcPtr, uintptr((to-from+1)*uint64(elemSize)))
+	ArrayShiftRightUnsafe[T](vector, from, to, count)
 }
 
 // VectorShiftLeft shifts a contiguous range of elements in the vector
@@ -341,16 +342,7 @@ func VectorShiftRightUnsafe[T foundation.Numeric](vector memcore.MarkRaw, from, 
 //go:nosplit
 //go:inline
 func VectorShiftLeft[T foundation.Numeric](vector memcore.MarkRaw, from, to, count uint64) error {
-	instance := memcore.MemcoreMarkDereferenceObject[Vector[T]](vector)
-	if from >= instance.capacity || to >= instance.capacity {
-		return fmt.Errorf("invalid range: from=%d to=%d capacity=%d", from, to, instance.capacity)
-	}
-	if count == 0 || from >= to {
-		return nil
-	}
-
-	VectorShiftLeftUnsafe[T](vector, from, to, count)
-	return nil
+	return VectorShiftLeft[T](vector, from, to, count)
 }
 
 // VectorShiftLeftUnsafe shifts a contiguous range of elements in the vector
@@ -376,14 +368,25 @@ func VectorShiftLeft[T foundation.Numeric](vector memcore.MarkRaw, from, to, cou
 //go:nosplit
 //go:inline
 func VectorShiftLeftUnsafe[T foundation.Numeric](vector memcore.MarkRaw, from, to, count uint64) {
-	instance := memcore.MemcoreMarkDereferenceObject[Vector[T]](vector)
-	baseAddr := memcore.MemcoreMarkDereference(vector)
+	ArrayShiftLeftUnsafe[T](vector, from, to, count)
+}
 
-	elemSize := instance.itemSizeUintPtr
-	srcPtr := vectorGetPtrAtIdx(instance, baseAddr, from+count)
-	dstPtr := vectorGetPtrAtIdx(instance, baseAddr, from)
+// VectorRangeCopy is a convenience wrapper around shift lift/shift right.
+// It automatically determines which to use based on from and to.
+//
+//go:inline
+//go:nosplit
+func VectorRangeCopy[T foundation.Numeric](vector memcore.MarkRaw, from, to, count uint64) error {
+	return ArrayRangeCopy[T](vector, from, to, count)
+}
 
-	memcore.MemoryMoveNoHeapPointers(dstPtr, srcPtr, uintptr((to-from+1)*uint64(elemSize)))
+// VectorRangeCopyUnsafe is a convenience wrapper around shift lift/shift right unsafe.
+// It automatically determines which to use based on from and to.
+//
+//go:inline
+//go:nosplit
+func VectorRangeCopyUnsafe[T foundation.Numeric](vector memcore.MarkRaw, from, to, count uint64) {
+	ArrayRangeCopyUnsafe[T](vector, from, to, count)
 }
 
 // VectorDeleteAt resets memory to 0 at a given index, using pointers to this
@@ -393,15 +396,7 @@ func VectorShiftLeftUnsafe[T foundation.Numeric](vector memcore.MarkRaw, from, t
 //go:nosplit
 //go:inline
 func VectorDeleteAt[T foundation.Numeric](vector memcore.MarkRaw, idx uint64) error {
-	instance := memcore.MemcoreMarkDereferenceObject[Vector[T]](vector)
-	if error := vectorGuaranteeIdxValidity(instance, idx); error != nil {
-		return error
-	}
-
-	baseAddr := memcore.MemcoreMarkDereference(vector)
-	currentPtr := vectorGetPtrAtIdx(instance, baseAddr, idx)
-	memcore.MemoryClearNoHeapPointers(currentPtr, uintptr(instance.itemSize))
-	return nil
+	return ArrayDeleteAt[T](vector, idx)
 }
 
 // VectorDeleteAtUnsafe resets memory to 0 at a given index, using pointers to this
@@ -411,10 +406,7 @@ func VectorDeleteAt[T foundation.Numeric](vector memcore.MarkRaw, idx uint64) er
 //go:nosplit
 //go:inline
 func VectorDeleteAtUnsafe[T foundation.Numeric](vector memcore.MarkRaw, idx uint64) {
-	instance := memcore.MemcoreMarkDereferenceObject[Vector[T]](vector)
-	baseAddr := memcore.MemcoreMarkDereference(vector)
-	currentPtr := vectorGetPtrAtIdx(instance, baseAddr, idx)
-	memcore.MemoryClearNoHeapPointers(currentPtr, uintptr(instance.itemSize))
+	ArrayDeleteAtUnsafe[T](vector, idx)
 }
 
 // VectorClear resets the entire vector's memory to 0, allowing it to be reused.
@@ -423,688 +415,338 @@ func VectorDeleteAtUnsafe[T foundation.Numeric](vector memcore.MarkRaw, idx uint
 //go:nosplit
 //go:inline
 func VectorClear[T foundation.Numeric](vector memcore.MarkRaw) {
-	instance := memcore.MemcoreMarkDereferenceObject[Vector[T]](vector)
-	baseAddr := memcore.MemcoreMarkDereference(vector)
-	memcore.MemoryClearNoHeapPointers(vectorComputeDataAddr(instance, baseAddr), uintptr(instance.capacity)*uintptr(instance.itemSize))
+	ArrayClear[T](vector)
 }
 
 // VectorIsIdxValid checks whether the given index is valid.
 //
 //go:inline
 func VectorIsIdxValid[T foundation.Numeric](vector memcore.MarkRaw, idx uint64) bool {
-	instance := memcore.MemcoreMarkDereferenceObject[Vector[T]](vector)
-	return idx < instance.capacity
+	return ArrayIsIdxValid[T](vector, idx)
 }
 
-// ------------------------------------------------- STRUCTURAL OPS
+// ---------------------------------------------------- VECTOR VIEW
 
-// VectorStructuralMin returns the lowest element within the vector.
-func VectorStructuralMin[T foundation.Numeric](vector memcore.MarkRaw) T {
-	minValue := foundation.MaxValue[T]()
-
-	vectorUnaryReadOnlyExecute(vector, func(item T) {
-		if item < minValue {
-			minValue = item
-		}
-	})
-
-	return minValue
-}
-
-// VectorStructuralMax returns the highest element within the vector.
-func VectorStructuralMax[T foundation.Numeric](vector memcore.MarkRaw) T {
-	maxValue := foundation.MinValue[T]()
-
-	vectorUnaryReadOnlyExecute(vector, func(item T) {
-		if item > maxValue {
-			maxValue = item
-		}
-	})
-
-	return maxValue
-}
-
-// VectorStructuralSumF32 computes the linear sum of the vector’s elements in float32 precision.
-func VectorStructuralSumF32[T foundation.Numeric](vector memcore.MarkRaw) float32 {
-	sum := float32(0)
-
-	vectorUnaryReadOnlyExecute(vector, func(a T) {
-		sum += float32(a)
-	})
-
-	return sum
-}
-
-// VectorStructuralSumF64 computes the linear sum of the vector’s elements in float64 precision.
-func VectorStructuralSumF64[T foundation.Numeric](vector memcore.MarkRaw) float64 {
-	sum := float64(0)
-
-	vectorUnaryReadOnlyExecute(vector, func(a T) {
-		sum += float64(a)
-	})
-
-	return sum
-}
-
-// VectorStructuralSumSquaredF32 computes the sum of squares (used in magnitude calculation) in float32 precision.
-func VectorStructuralSumSquaredF32[T foundation.Numeric](vector memcore.MarkRaw) float32 {
-	sqrSum := float32(0)
-
-	vectorUnaryReadOnlyExecute(vector, func(a T) {
-		sqrSum += float32(a) * float32(a)
-	})
-
-	return sqrSum
-}
-
-// VectorStructuralSumSquaredF64 computes the sum of squares (used in magnitude calculation) in float64 precision.
-func VectorStructuralSumSquaredF64[T foundation.Numeric](vector memcore.MarkRaw) float64 {
-	sqrSum := float64(0)
-
-	vectorUnaryReadOnlyExecute(vector, func(a T) {
-		sqrSum += float64(a) * float64(a)
-	})
-
-	return sqrSum
-}
-
-// VectorStructuralMagnitudeF32 computes the magnitude of a given vector in float32 precision.
-func VectorStructuralMagnitudeF32[T foundation.Numeric](vector memcore.MarkRaw) float32 {
-	sqrSum := float32(0)
-
-	vectorUnaryReadOnlyExecute(vector, func(a T) {
-		sqrSum += float32(a) * float32(a)
-	})
-
-	sqrRoot := foundation.Sqrt32(sqrSum)
-	return sqrRoot
-}
-
-// VectorStructuralMagnitudeF64 computes the magnitude of a given vector in float64 precision.
-func VectorStructuralMagnitudeF64[T foundation.Numeric](vector memcore.MarkRaw) float64 {
-	sqrSum := float64(0)
-
-	vectorUnaryReadOnlyExecute(vector, func(a T) {
-		sqrSum += float64(a) * float64(a)
-	})
-
-	sqrRoot := foundation.Sqrt64(sqrSum)
-	return sqrRoot
-}
-
-// VectorNormalizedF32 normalizes the vector with float32 precision such that its magnitude is 1.
-func VectorNormalizedF32[T foundation.Numeric](
-	currentVector memcore.MarkRaw,
-	newVectorAddr memcore.MarkRaw,
-) {
-	magnitude := VectorStructuralMagnitudeF32[T](currentVector)
-	inv := 1.0 / magnitude
-	vectorUnaryExecute(currentVector, newVectorAddr, func(a T) float32 {
-		return float32(a) * inv
-	})
-}
-
-// VectorStructuralNormalizedF64 normalizes the vector with float64 precision such that its magnitude is 1.
-func VectorStructuralNormalizedF64[T foundation.Numeric](
-	currentVector memcore.MarkRaw,
-	newVectorAddr memcore.MarkRaw,
-) {
-	magnitude := VectorStructuralMagnitudeF64[T](currentVector)
-	inv := 1.0 / magnitude
-
-	vectorUnaryExecute(currentVector, newVectorAddr, func(a T) float64 {
-		return float64(a) * inv
-	})
-}
-
-// ------------------------------------------------- SCALARS
-
-// VectorScalarSetAll sets all values within the vector to value T.
-func VectorScalarSetAll[T foundation.Numeric](vector memcore.MarkRaw, v T) {
-	vectorUnaryExecute(vector, vector, func(_ T) T {
-		return v
-	})
-}
-
-// VectorScalarZeroAll sets all values within the Vector to its zero value.
-// This is different from clearing the memory to 0.
-func VectorScalarZeroAll[T foundation.Numeric](vector memcore.MarkRaw) {
-	var zero T
-	vectorUnaryExecute(vector, vector, func(_ T) T {
-		return zero
-	})
-}
-
-// VectorScalarSetAllSequence sets all the values in the Vector to a value computed as:
-// initial + (idx*step).
-// It panics if the resulting value would be bigger than the numeric type.
-func VectorScalarSetAllSequence[T foundation.Numeric](vector memcore.MarkRaw, initial, step T) {
-	maxT := float64(foundation.MaxValue[T]())
-	idx := 0
-	vectorUnaryExecute(vector, vector, func(_ T) T {
-		v := float64(initial) + (float64(idx) * float64(step))
-
-		if v > maxT {
-			panic(fmt.Errorf("cannot set value of idx %d: would result in overflow: requested=%f,max=%f", idx, v, maxT))
-		}
-
-		idx++
-
-		return T(v)
-	})
-}
-
-// VectorScalarMultiplyF32 multiplies the values of the Vector by the scalar in float32 precision.
-func VectorScalarMultiplyF32[T, S foundation.Numeric](
-	currentVectorAddr, newVectorAddr memcore.MarkRaw,
-	scalar S,
-) {
-	vectorUnaryExecute(currentVectorAddr, newVectorAddr, func(a T) float32 {
-		return float32(a) * float32(scalar)
-	})
-}
-
-// VectorScalarMultiplyF64 multiplies the values of the Vector by the scalar in float64 precision.
-func VectorScalarMultiplyF64[T, S foundation.Numeric](
-	currentVectorAddr, newVectorAddr memcore.MarkRaw,
-	scalar S,
-) {
-	vectorUnaryExecute(currentVectorAddr, newVectorAddr, func(a T) float64 {
-		return float64(a) * float64(scalar)
-	})
-}
-
-// VectorScalarDivideF32 divides the values of the Vector by the scalar in float32 precision.
-func VectorScalarDivideF32[T, S foundation.Numeric](
-	currentVectorAddr, newVectorAddr memcore.MarkRaw,
-	scalar S,
-) {
-	vectorUnaryExecute(currentVectorAddr, newVectorAddr, func(a T) float32 {
-		return float32(a) / float32(scalar)
-	})
-}
-
-// VectorScalarDivideF64 divides the values of the Vector by the scalar in float64 precision.
-func VectorScalarDivideF64[T, S foundation.Numeric](
-	currentVectorAddr, newVectorAddr memcore.MarkRaw,
-	scalar S,
-) {
-	vectorUnaryExecute(currentVectorAddr, newVectorAddr, func(a T) float64 {
-		return float64(a) / float64(scalar)
-	})
-}
-
-// VectorScalarAddF32 adds the values of the Vector by the scalar in float32 precision.
-func VectorScalarAddF32[T, S foundation.Numeric](
-	currentVectorAddr, newVectorAddr memcore.MarkRaw,
-	scalar S,
-) {
-	vectorUnaryExecute(currentVectorAddr, newVectorAddr, func(a T) float32 {
-		return float32(a) + float32(scalar)
-	})
-}
-
-// VectorScalarAddF64 adds the values of the Vector by the scalar in float64 precision.
-func VectorScalarAddF64[T, S foundation.Numeric](
-	currentVectorAddr, newVectorAddr memcore.MarkRaw,
-	scalar S,
-) {
-	vectorUnaryExecute(currentVectorAddr, newVectorAddr, func(a T) float64 {
-		return float64(a) + float64(scalar)
-	})
-}
-
-// VectorScalarSubtractF32 subtracts the scalar from the values in the Vector in float32 precision.
-func VectorScalarSubtractF32[T, S foundation.Numeric](
-	currentVectorAddr, newVectorAddr memcore.MarkRaw,
-	scalar S,
-) {
-	vectorUnaryExecute(currentVectorAddr, newVectorAddr, func(a T) float32 {
-		return float32(a) - float32(scalar)
-	})
-}
-
-// VectorScalarSubtractF64 subtracts the scalar from the values in the Vector in float64 precision.
-func VectorScalarSubtractF64[T, S foundation.Numeric](
-	currentVectorAddr, newVectorAddr memcore.MarkRaw,
-	scalar S,
-) {
-	vectorUnaryExecute(currentVectorAddr, newVectorAddr, func(a T) float64 {
-		return float64(a) - float64(scalar)
-	})
-}
-
-// VectorScalarClamp transforms the vector in such a way that each element is between
-// min and max.
-func VectorScalarClamp[T foundation.Numeric](
-	vector memcore.MarkRaw,
-	min, max T,
-) {
-	vectorUnaryExecute(vector, vector, func(a T) T {
-		if a < min {
-			return min
-		} else if a > max {
-			return max
-		}
-
-		return a
-	})
-}
-
-// ------------------------------------------------- ELEMENT WISE
-
-// VectorElementWiseAddF32 adds the values of Vector B to Vector A, resulting in Vector C at newVectorAddr.
-// It does so in float32 precision.
-func VectorElementWiseAddF32[T, U foundation.Numeric](
-	vectorAAddr, vectorBAddr, newVectorAddr memcore.MarkRaw,
-) {
-	vectorBinaryExecute(vectorAAddr, vectorBAddr, newVectorAddr, func(a T, b U) float32 {
-		return float32(a) + float32(b)
-	})
-}
-
-// VectorElementWiseAddF64 adds the values of Vector B to Vector A, resulting in Vector C at newVectorAddr.
-// It does so in float64 precision.
-func VectorElementWiseAddF64[T, U foundation.Numeric](
-	vectorAAddr, vectorBAddr, newVectorAddr memcore.MarkRaw,
-) {
-	vectorBinaryExecute(vectorAAddr, vectorBAddr, newVectorAddr, func(a T, b U) float64 {
-		return float64(a) + float64(b)
-	})
-}
-
-// VectorElementWiseSubtractF32 subtracts the values of Vector B from Vector A, resulting in Vector C at newVectorAddr.
-// It does so in float32 precision.
-func VectorElementWiseSubtractF32[T, U foundation.Numeric](
-	vectorAAddr, vectorBAddr, newVectorAddr memcore.MarkRaw,
-) {
-	vectorBinaryExecute(vectorAAddr, vectorBAddr, newVectorAddr, func(a T, b U) float32 {
-		return float32(a) - float32(b)
-	})
-}
-
-// VectorElementWiseSubtractF64 subtracts the values of Vector B from Vector A, resulting in Vector C at newVectorAddr.
-// It does so in float364precision.
-func VectorElementWiseSubtractF64[T, U foundation.Numeric](
-	vectorAAddr, vectorBAddr, newVectorAddr memcore.MarkRaw,
-) {
-	vectorBinaryExecute(vectorAAddr, vectorBAddr, newVectorAddr, func(a T, b U) float64 {
-		return float64(a) - float64(b)
-	})
-}
-
-// VectorElementWiseMultiplyF32 multiplies the values of Vector A by Vector B, resulting in Vector C at newVectorAddr.
-// It does so in float32 precision.
-func VectorElementWiseMultiplyF32[T, U foundation.Numeric](
-	vectorAAddr, vectorBAddr, newVectorAddr memcore.MarkRaw,
-) {
-	vectorBinaryExecute(vectorAAddr, vectorBAddr, newVectorAddr, func(a T, b U) float32 {
-		return float32(a) * float32(b)
-	})
-}
-
-// VectorElementWiseMultiplyF64 multiplies the values of Vector A by Vector B, resulting in Vector C at newVectorAddr.
-// It does so in float64 precision.
-func VectorElementWiseMultiplyF64[T, U foundation.Numeric](
-	vectorAAddr, vectorBAddr, newVectorAddr memcore.MarkRaw,
-) {
-	vectorBinaryExecute(vectorAAddr, vectorBAddr, newVectorAddr, func(a T, b U) float64 {
-		return float64(a) * float64(b)
-	})
-}
-
-// VectorElementWiseDivideF32 divides the values of Vector A by Vector B, resulting in Vector C at newVectorAddr.
-// It does so in float32 precision.
-func VectorElementWiseDivideF32[T, U foundation.Numeric](
-	vectorAAddr, vectorBAddr, newVectorAddr memcore.MarkRaw,
-) {
-	vectorBinaryExecute(vectorAAddr, vectorBAddr, newVectorAddr, func(a T, b U) float32 {
-		return float32(a) / float32(b)
-	})
-}
-
-// VectorElementWiseDivideF64 divides the values of Vector A by Vector B, resulting in Vector C at newVectorAddr.
-// It does so in float64 precision.
-func VectorElementWiseDivideF64[T, U foundation.Numeric](
-	vectorAAddr, vectorBAddr, newVectorAddr memcore.MarkRaw,
-) {
-	vectorBinaryExecute(vectorAAddr, vectorBAddr, newVectorAddr, func(a T, b U) float64 {
-		return float64(a) / float64(b)
-	})
-}
-
-// VectorElementWiseDotProductF32 computes the dot product between two vectors in float32 precision.
-// T is the datatype of vector A, and U is the datatype of vector B.
-func VectorElementWiseDotProductF32[T, U foundation.Numeric](vectorAAddr, vectorBAddr memcore.MarkRaw) float32 {
-	dotProduct := float32(0)
-
-	vectorBinaryReadOnlyExecute(vectorAAddr, vectorBAddr, func(a T, b U) {
-		dotProduct += float32(a) * float32(b)
-	})
-
-	return dotProduct
-}
-
-// VectorElementWiseDotProductF64 computes the dot product between two vectors in float64 precision.
-// T is the datatype of vector A, and U is the datatype of vector B.
-func VectorElementWiseDotProductF64[T, U foundation.Numeric](vectorAAddr, vectorBAddr memcore.MarkRaw) float64 {
-	dotProduct := float64(0)
-
-	vectorBinaryReadOnlyExecute(vectorAAddr, vectorBAddr, func(a T, b U) {
-		dotProduct += float64(a) * float64(b)
-	})
-
-	return dotProduct
-}
-
-// VectorElementWiseGreaterThanOrEqualTo produces a boolean mask determining whether each element
-// in Vector A is bigger than or equal to the same element in Vector B.
-// The mask must be of type Array[bool]
-// Capacity equality must be guaranteed by the caller.
-func VectorElementWiseGreaterThanOrEqualTo[T, U foundation.Numeric](
-	vectorAAddr, vectorBAddr, maskAddr memcore.MarkRaw,
-) {
-	i := uint64(0)
-	vectorBinaryReadOnlyExecute(vectorAAddr, vectorBAddr, func(a T, b U) {
-		if float64(a) >= float64(b) {
-			ArraySetAtUnsafe(maskAddr, i, true)
-		} else {
-			ArraySetAtUnsafe(maskAddr, i, false)
-		}
-
-		i++
-	})
-}
-
-// VectorElementWiseGreaterThan produces a boolean mask determining whether each element
-// in Vector A is bigger than the same element in Vector B.
-// The mask must be of type Array[bool]
-// Capacity equality must be guaranteed by the caller.
-func VectorElementWiseGreaterThan[T, U foundation.Numeric](
-	vectorAAddr, vectorBAddr, maskAddr memcore.MarkRaw,
-) {
-	i := uint64(0)
-	vectorBinaryReadOnlyExecute(vectorAAddr, vectorBAddr, func(a T, b U) {
-		if float64(a) > float64(b) {
-			ArraySetAtUnsafe(maskAddr, i, true)
-		} else {
-			ArraySetAtUnsafe(maskAddr, i, false)
-		}
-
-		i++
-	})
-}
-
-// VectorElementWiseSmallerThanOrEqualTo produces a boolean mask determining whether each element
-// in Vector A is smaller than or equal to the same element in Vector B.
-// The mask must be of type Array[bool]
-// Capacity equality must be guaranteed by the caller.
-func VectorElementWiseSmallerThanOrEqualTo[T, U foundation.Numeric](
-	vectorAAddr, vectorBAddr, maskAddr memcore.MarkRaw,
-) {
-	i := uint64(0)
-	vectorBinaryReadOnlyExecute(vectorAAddr, vectorBAddr, func(a T, b U) {
-		if float64(a) <= float64(b) {
-			ArraySetAtUnsafe(maskAddr, i, true)
-		} else {
-			ArraySetAtUnsafe(maskAddr, i, false)
-		}
-
-		i++
-	})
-}
-
-// VectorElementWiseSmallerThan produces a boolean mask determining whether each element
-// in Vector A is smaller than the same element in Vector B.
-// The mask must be of type Array[bool]
-// Capacity equality must be guaranteed by the caller.
-func VectorElementWiseSmallerThan[T, U foundation.Numeric](
-	vectorAAddr, vectorBAddr, maskAddr memcore.MarkRaw,
-) {
-	i := uint64(0)
-	vectorBinaryReadOnlyExecute(vectorAAddr, vectorBAddr, func(a T, b U) {
-		if float64(a) < float64(b) {
-			ArraySetAtUnsafe(maskAddr, i, true)
-		} else {
-			ArraySetAtUnsafe(maskAddr, i, false)
-		}
-
-		i++
-	})
-}
-
-// VectorElementWiseEqualTo produces a boolean mask determining whether each element
-// in Vector A is equal to the same element in Vector B within tolerance.
-// The mask must be of type Array[bool]
-// Capacity equality must be guaranteed by the caller.
-func VectorElementWiseEqualTo[T, U foundation.Numeric](
-	vectorAAddr, vectorBAddr, maskAddr memcore.MarkRaw,
-	tolerance float64,
-) {
-	i := uint64(0)
-	vectorBinaryReadOnlyExecute(vectorAAddr, vectorBAddr, func(a T, b U) {
-		equalEnough := math.Abs(float64(a)-float64(b)) <= tolerance
-		if equalEnough {
-			ArraySetAtUnsafe(maskAddr, i, true)
-		} else {
-			ArraySetAtUnsafe(maskAddr, i, false)
-		}
-
-		i++
-	})
-}
-
-// -------------------------- PRIVATE HELPERS
-
+// VectorViewLengthGet returns the length of the current view.
+//
 //go:inline
-func vectorUnaryReadOnlyExecute[T foundation.Numeric](
+func VectorViewLengthGet[T foundation.Numeric](vectorView VectorView[T]) uint64 {
+	return ArrayViewLengthGet((ArrayView[T])(vectorView))
+}
+
+// VectorViewIsReadonly returns whether the current view is readonly.
+//
+//go:inline
+func VectorViewIsReadonly[T foundation.Numeric](vectorView VectorView[T]) bool {
+	return ArrayViewIsReadonly((ArrayView[T])(vectorView))
+}
+
+// VectorViewItemGetAt returns item at idx (as computed by view startIdx+relativeIdx)
+//
+//go:inline
+func VectorViewItemGetAt[T foundation.Numeric](vectorView VectorView[T], relativeIdx uint64) (T, error) {
+	return ArrayViewItemGetAt((ArrayView[T])(vectorView), relativeIdx)
+}
+
+// VectorViewItemPtrGetAt returns item pointer at idx (as computed by view startIdx+relativeIdx)
+// Fails if the view is readonly (because getting a pointer would allow mutation)
+//
+//go:inline
+func VectorViewItemPtrGetAt[T foundation.Numeric](vectorView VectorView[T], relativeIdx uint64) (*T, error) {
+	return ArrayViewItemPtrGetAt((ArrayView[T])(vectorView), relativeIdx)
+}
+
+// VectorViewItemSetAt sets the item at idx (as computed by view startIdx+relativeIdx)
+// Fails if the view is readonly.
+//
+//go:inline
+func VectorViewItemSetAt[T foundation.Numeric](vectorView VectorView[T], relativeIdx uint64, v T) error {
+	return ArrayViewItemSetAt((ArrayView[T])(vectorView), relativeIdx, v)
+}
+
+// VectorViewForEach calls a function for every element in the vector view.
+// The indexes returned are the relative indexes.
+//
+//go:inline
+func VectorViewForEach[T foundation.Numeric](vectorView VectorView[T], fn func(item T, idx uint64)) {
+	ArrayViewForEach((ArrayView[T])(vectorView), fn)
+}
+
+// VectorViewForEachRaw calls a function for every element in the vector view.
+// Not possible for readonly views.
+// The indexes returned are the relative indexes.
+//
+//go:inline
+func VectorViewForEachRaw[T foundation.Numeric](vectorView VectorView[T], fn func(ptr unsafe.Pointer, idx uint64)) error {
+	return ArrayViewForEachRaw((ArrayView[T])(vectorView), fn)
+}
+
+// VectorViewStrideForEach calls a function for every element in the vector view.
+// It visits every stride-th element.
+// The indexes returned are the relative indexes.
+//
+//go:inline
+func VectorViewStrideForEach[T foundation.Numeric](vectorView VectorView[T], fn func(item T, idx uint64), stride uint64) {
+	ArrayViewStrideForEach((ArrayView[T])(vectorView), fn, stride)
+}
+
+// VectorViewStrideForEachRaw calls a function for every element in the vector view.
+// It visits every stride-th element.
+// Not possible for readonly views.
+// The indexes returned are the relative indexes.
+//
+//go:inline
+func VectorViewStrideForEachRaw[T foundation.Numeric](vectorView VectorView[T], fn func(ptr unsafe.Pointer, idx uint64), stride uint64) error {
+	return ArrayViewStrideForEachRaw((ArrayView[T])(vectorView), fn, stride)
+}
+
+// VectorViewIterate allows you to iterate over the vector view efficiently.
+// It provides a method to say which next element you need.
+// The next function returns true when your requested n exceeds the view length.
+// The indexes returned are the relative indexes.
+//
+//go:inline
+func VectorViewIterate[T foundation.Numeric](
+	vectorView VectorView[T],
+	fn func(item T, idx uint64, next func(n uint64) (T, uint64, bool)),
+) {
+	ArrayViewIterate((ArrayView[T])(vectorView), fn)
+}
+
+// VectorViewIterateRaw allows you to iterate over the array view efficiently.
+// It provides a method to say which next element you need.
+// The next function returns true when your requested n exceeds the view length.
+// Not possible for readonly views.
+// The indexes returned are the relative indexes.
+//
+//go:inline
+func VectorViewIterateRaw[T foundation.Numeric](
+	vectorView VectorView[T],
+	fn func(ptr unsafe.Pointer, idx uint64, next func(n uint64) (unsafe.Pointer, uint64, bool)),
+) error {
+	return ArrayViewIterateRaw((ArrayView[T])(vectorView), fn)
+}
+
+// VectorViewNestedGet creates a nested view inside an existing view.
+// The indices [from:to) are relative to the current view.
+// The readonly status is preserved.
+//
+//go:inline
+func VectorViewNestedGet[T foundation.Numeric](vectorView VectorView[T], from, to uint64) VectorView[T] {
+	return VectorView[T](ArrayViewNestedGet(ArrayView[T](vectorView), from, to))
+}
+
+// VectorUnaryReadOnlyOp is an operation that executes over a single element and does not mutate.
+type VectorUnaryReadOnlyOp[T foundation.Numeric] func(item T)
+
+// VectorUnaryOp is an operation that executes over a single element and mutates.
+type VectorUnaryOp[TInput, TOutput foundation.Numeric] func(item TInput) TOutput
+
+// VectorBinaryReadOnlyOp is an operation that executes over two elements at the same idx from different sources.
+// It does not mutate.
+type VectorBinaryReadOnlyOp[TInput1, TInput2 foundation.Numeric] func(itemA TInput1, itemB TInput2)
+
+// VectorBinaryOp is an operation that executes over two elements at the same idx from different sources.
+// It mutates.
+type VectorBinaryOp[TInput1, TInput2, TOutput foundation.Numeric] func(itemA TInput1, itemB TInput2) TOutput
+
+// VectorUnaryReadOnlyExecute executes a stride of unary readonly operations.
+//
+//go:inline
+func VectorUnaryReadOnlyExecute[T foundation.Numeric](
 	vectorAddr memcore.MarkRaw,
-	op func(a T),
+	op VectorUnaryReadOnlyOp[T],
+	stride uint64,
 ) {
-	srcBase, srcInstance := memcore.MemcoreMarkDereferenceObjectAlt[Vector[T]](vectorAddr)
+	base, inst := memcore.MemcoreMarkDereferenceObjectAlt[Vector[T]](vectorAddr)
+	data := unsafe.Add(base, inst.dataAddrOffset)
+	size := uintptr(inst.itemSize)
+	cap := inst.capacity
 
-	capacity := srcInstance.capacity
-	srcItemSize := uintptr(srcInstance.itemSize)
-
-	srcData := vectorComputeDataAddr(srcInstance, srcBase)
-
-	i := uint64(0)
-	for ; i+7 < capacity; i += 8 {
-		vectorUnaryReadOnlyOp(srcData, srcItemSize, uintptr(i+0), op)
-		vectorUnaryReadOnlyOp(srcData, srcItemSize, uintptr(i+1), op)
-		vectorUnaryReadOnlyOp(srcData, srcItemSize, uintptr(i+2), op)
-		vectorUnaryReadOnlyOp(srcData, srcItemSize, uintptr(i+3), op)
-		vectorUnaryReadOnlyOp(srcData, srcItemSize, uintptr(i+4), op)
-		vectorUnaryReadOnlyOp(srcData, srcItemSize, uintptr(i+5), op)
-		vectorUnaryReadOnlyOp(srcData, srcItemSize, uintptr(i+6), op)
-		vectorUnaryReadOnlyOp(srcData, srcItemSize, uintptr(i+7), op)
-	}
-
-	for ; i < capacity; i++ {
-		vectorUnaryReadOnlyOp(srcData, srcItemSize, uintptr(i), op)
-	}
+	vectorUnrolledDispatch[T](cap, stride, func(idx uintptr) {
+		v := *(*T)(unsafe.Add(data, idx*size))
+		op(v)
+	})
 }
 
+// VectorUnaryExecute executes a stride of unary mutating operations,
+// writing results from the source vector into the destination vector.
+//
 //go:inline
-func vectorUnaryExecute[T, P foundation.Numeric](
-	vectorAddr, newVectorAddr memcore.MarkRaw,
-	op func(a T) P,
+func VectorUnaryExecute[T, P foundation.Numeric](
+	srcAddr, dstAddr memcore.MarkRaw,
+	op VectorUnaryOp[T, P],
+	stride uint64,
 ) {
-	srcBase, srcInstance := memcore.MemcoreMarkDereferenceObjectAlt[Vector[T]](vectorAddr)
-	dstBase, dstInstance := memcore.MemcoreMarkDereferenceObjectAlt[Vector[P]](newVectorAddr)
+	srcBase, srcInst := memcore.MemcoreMarkDereferenceObjectAlt[Vector[T]](srcAddr)
+	dstBase, dstInst := memcore.MemcoreMarkDereferenceObjectAlt[Vector[P]](dstAddr)
 
-	if srcInstance.capacity != dstInstance.capacity {
-		panic(fmt.Errorf("cannot do unary operation with different capacities (src=%d,dest=%d)", srcInstance.capacity, dstInstance.capacity))
+	if srcInst.capacity != dstInst.capacity {
+		panic(fmt.Errorf("cannot perform unary op: capacity mismatch (src=%d, dst=%d)",
+			srcInst.capacity, dstInst.capacity))
 	}
 
-	capacity := srcInstance.capacity
-	srcItemSize := uintptr(srcInstance.itemSize)
-	dstItemSize := uintptr(dstInstance.itemSize)
+	srcData := unsafe.Add(srcBase, srcInst.dataAddrOffset)
+	dstData := unsafe.Add(dstBase, dstInst.dataAddrOffset)
+	srcSize := uintptr(srcInst.itemSize)
+	dstSize := uintptr(dstInst.itemSize)
+	capacity := srcInst.capacity
 
-	srcData := vectorComputeDataAddr(srcInstance, srcBase)
-	dstData := vectorComputeDataAddr(dstInstance, dstBase)
-
-	i := uint64(0)
-	for ; i+7 < capacity; i += 8 {
-		vectorUnaryOp(srcData, dstData, srcItemSize, dstItemSize, uintptr(i+0), op)
-		vectorUnaryOp(srcData, dstData, srcItemSize, dstItemSize, uintptr(i+1), op)
-		vectorUnaryOp(srcData, dstData, srcItemSize, dstItemSize, uintptr(i+2), op)
-		vectorUnaryOp(srcData, dstData, srcItemSize, dstItemSize, uintptr(i+3), op)
-		vectorUnaryOp(srcData, dstData, srcItemSize, dstItemSize, uintptr(i+4), op)
-		vectorUnaryOp(srcData, dstData, srcItemSize, dstItemSize, uintptr(i+5), op)
-		vectorUnaryOp(srcData, dstData, srcItemSize, dstItemSize, uintptr(i+6), op)
-		vectorUnaryOp(srcData, dstData, srcItemSize, dstItemSize, uintptr(i+7), op)
-	}
-
-	for ; i < capacity; i++ {
-		vectorUnaryOp(srcData, dstData, srcItemSize, dstItemSize, uintptr(i), op)
-	}
+	vectorUnrolledDispatch[T](capacity, stride, func(idx uintptr) {
+		srcV := *(*T)(unsafe.Add(srcData, idx*srcSize))
+		res := op(srcV)
+		*(*P)(unsafe.Add(dstData, idx*dstSize)) = res
+	})
 }
 
+// VectorBinaryReadOnlyExecute executes a stride of binary read-only operations
+// between two vectors of equal capacity.
+//
 //go:inline
-func vectorBinaryReadOnlyExecute[T, U foundation.Numeric](
+func VectorBinaryReadOnlyExecute[T, U foundation.Numeric](
 	vectorAAddr, vectorBAddr memcore.MarkRaw,
-	op func(a T, b U),
+	op VectorBinaryReadOnlyOp[T, U],
+	stride uint64,
 ) {
-	srcABase, srcAInstance := memcore.MemcoreMarkDereferenceObjectAlt[Vector[T]](vectorAAddr)
-	srcBBase, srcBInstance := memcore.MemcoreMarkDereferenceObjectAlt[Vector[U]](vectorBAddr)
+	aBase, aInst := memcore.MemcoreMarkDereferenceObjectAlt[Vector[T]](vectorAAddr)
+	bBase, bInst := memcore.MemcoreMarkDereferenceObjectAlt[Vector[U]](vectorBAddr)
 
-	if srcAInstance.capacity != srcBInstance.capacity {
-		panic(fmt.Errorf("cannot do binary operation with different capacities (srcA=%d,srcB=%d)", srcAInstance.capacity, srcBInstance.capacity))
+	if aInst.capacity != bInst.capacity {
+		panic(fmt.Errorf("cannot perform binary op: capacity mismatch (a=%d, b=%d)",
+			aInst.capacity, bInst.capacity))
 	}
 
-	capacity := srcAInstance.capacity
-	srcAItemSize := uintptr(srcAInstance.itemSize)
-	srcBItemSize := uintptr(srcBInstance.itemSize)
+	aData := unsafe.Add(aBase, aInst.dataAddrOffset)
+	bData := unsafe.Add(bBase, bInst.dataAddrOffset)
+	aSize := uintptr(aInst.itemSize)
+	bSize := uintptr(bInst.itemSize)
+	capacity := aInst.capacity
 
-	srcAData := vectorComputeDataAddr(srcAInstance, srcABase)
-	srcBData := vectorComputeDataAddr(srcBInstance, srcBBase)
+	vectorUnrolledDispatch[T](capacity, stride, func(idx uintptr) {
+		aVal := *(*T)(unsafe.Add(aData, idx*aSize))
+		bVal := *(*U)(unsafe.Add(bData, idx*bSize))
+		op(aVal, bVal)
+	})
+}
 
-	i := uint64(0)
+// VectorBinaryExecute executes a stride of binary mutating operations
+// between two source vectors and writes results into a destination vector.
+//
+//go:inline
+func VectorBinaryExecute[T, U, P foundation.Numeric](
+	vectorAAddr, vectorBAddr, destAddr memcore.MarkRaw,
+	op VectorBinaryOp[T, U, P],
+	stride uint64,
+) {
+	aBase, aInst := memcore.MemcoreMarkDereferenceObjectAlt[Vector[T]](vectorAAddr)
+	bBase, bInst := memcore.MemcoreMarkDereferenceObjectAlt[Vector[U]](vectorBAddr)
+	dBase, dInst := memcore.MemcoreMarkDereferenceObjectAlt[Vector[P]](destAddr)
+
+	if aInst.capacity != bInst.capacity || aInst.capacity != dInst.capacity {
+		panic(fmt.Errorf("cannot perform binary op: capacity mismatch (a=%d, b=%d, d=%d)",
+			aInst.capacity, bInst.capacity, dInst.capacity))
+	}
+
+	aData := unsafe.Add(aBase, aInst.dataAddrOffset)
+	bData := unsafe.Add(bBase, bInst.dataAddrOffset)
+	dData := unsafe.Add(dBase, dInst.dataAddrOffset)
+
+	aSize := uintptr(aInst.itemSize)
+	bSize := uintptr(bInst.itemSize)
+	dSize := uintptr(dInst.itemSize)
+	capacity := aInst.capacity
+
+	vectorUnrolledDispatch[T](capacity, stride, func(idx uintptr) {
+		aVal := *(*T)(unsafe.Add(aData, idx*aSize))
+		bVal := *(*U)(unsafe.Add(bData, idx*bSize))
+		*(*P)(unsafe.Add(dData, idx*dSize)) = op(aVal, bVal)
+	})
+}
+
+//go:inline
+func vectorUnrolledDispatch[T foundation.Numeric](
+	capacity uint64,
+	stride uint64,
+	apply func(idx uintptr),
+) {
+	switch stride {
+	case 8:
+		vectorUnrolledStride8[T](capacity, apply)
+	case 4:
+		vectorUnrolledStride4[T](capacity, apply)
+	case 2:
+		vectorUnrolledStride2[T](capacity, apply)
+	case 1:
+		vectorUnrolledStride1[T](capacity, apply)
+	default:
+		vectorUnrolledGeneric[T](capacity, stride, apply)
+	}
+}
+
+//go:inline
+func vectorUnrolledStride8[T foundation.Numeric](
+	capacity uint64,
+	apply func(idx uintptr),
+) {
+	var i uint64
 	for ; i+7 < capacity; i += 8 {
-		vectorBinaryReadOnlyOp(srcAData, srcBData, srcAItemSize, srcBItemSize, uintptr(i+0), op)
-		vectorBinaryReadOnlyOp(srcAData, srcBData, srcAItemSize, srcBItemSize, uintptr(i+1), op)
-		vectorBinaryReadOnlyOp(srcAData, srcBData, srcAItemSize, srcBItemSize, uintptr(i+2), op)
-		vectorBinaryReadOnlyOp(srcAData, srcBData, srcAItemSize, srcBItemSize, uintptr(i+3), op)
-		vectorBinaryReadOnlyOp(srcAData, srcBData, srcAItemSize, srcBItemSize, uintptr(i+4), op)
-		vectorBinaryReadOnlyOp(srcAData, srcBData, srcAItemSize, srcBItemSize, uintptr(i+5), op)
-		vectorBinaryReadOnlyOp(srcAData, srcBData, srcAItemSize, srcBItemSize, uintptr(i+6), op)
-		vectorBinaryReadOnlyOp(srcAData, srcBData, srcAItemSize, srcBItemSize, uintptr(i+7), op)
+		apply(uintptr(i + 0))
+		apply(uintptr(i + 1))
+		apply(uintptr(i + 2))
+		apply(uintptr(i + 3))
+		apply(uintptr(i + 4))
+		apply(uintptr(i + 5))
+		apply(uintptr(i + 6))
+		apply(uintptr(i + 7))
 	}
 
 	for ; i < capacity; i++ {
-		vectorBinaryReadOnlyOp(srcAData, srcBData, srcAItemSize, srcBItemSize, uintptr(i), op)
+		apply(uintptr(i))
 	}
 }
 
 //go:inline
-func vectorBinaryExecute[T, U, P foundation.Numeric](
-	vectorAAddr, vectorBAddr, newVectorAddr memcore.MarkRaw,
-	op func(a T, b U) P,
-) {
-	srcABase, srcAInstance := memcore.MemcoreMarkDereferenceObjectAlt[Vector[T]](vectorAAddr)
-	srcBBase, srcBInstance := memcore.MemcoreMarkDereferenceObjectAlt[Vector[U]](vectorBAddr)
-	dstBase, dstInstance := memcore.MemcoreMarkDereferenceObjectAlt[Vector[P]](newVectorAddr)
-
-	if srcAInstance.capacity != dstInstance.capacity || srcAInstance.capacity != srcBInstance.capacity {
-		panic(fmt.Errorf("cannot do binary operation with different capacities (srcA=%d,srcB=%d,dest=%d)", srcAInstance.capacity, srcBInstance.capacity, dstInstance.capacity))
+func vectorUnrolledStride4[T foundation.Numeric](capacity uint64, apply func(idx uintptr)) {
+	var i uint64
+	for ; i+3 < capacity; i += 4 {
+		apply(uintptr(i + 0))
+		apply(uintptr(i + 1))
+		apply(uintptr(i + 2))
+		apply(uintptr(i + 3))
 	}
-
-	capacity := srcAInstance.capacity
-	srcAItemSize := uintptr(srcAInstance.itemSize)
-	srcBItemSize := uintptr(srcBInstance.itemSize)
-	dstItemSize := uintptr(dstInstance.itemSize)
-
-	srcAData := vectorComputeDataAddr(srcAInstance, srcABase)
-	srcBData := vectorComputeDataAddr(srcBInstance, srcBBase)
-	dstData := vectorComputeDataAddr(dstInstance, dstBase)
-
-	i := uint64(0)
-	for ; i+7 < capacity; i += 8 {
-		vectorBinaryOp(srcAData, srcBData, dstData, srcAItemSize, srcBItemSize, dstItemSize, uintptr(i+0), op)
-		vectorBinaryOp(srcAData, srcBData, dstData, srcAItemSize, srcBItemSize, dstItemSize, uintptr(i+1), op)
-		vectorBinaryOp(srcAData, srcBData, dstData, srcAItemSize, srcBItemSize, dstItemSize, uintptr(i+2), op)
-		vectorBinaryOp(srcAData, srcBData, dstData, srcAItemSize, srcBItemSize, dstItemSize, uintptr(i+3), op)
-		vectorBinaryOp(srcAData, srcBData, dstData, srcAItemSize, srcBItemSize, dstItemSize, uintptr(i+4), op)
-		vectorBinaryOp(srcAData, srcBData, dstData, srcAItemSize, srcBItemSize, dstItemSize, uintptr(i+5), op)
-		vectorBinaryOp(srcAData, srcBData, dstData, srcAItemSize, srcBItemSize, dstItemSize, uintptr(i+6), op)
-		vectorBinaryOp(srcAData, srcBData, dstData, srcAItemSize, srcBItemSize, dstItemSize, uintptr(i+7), op)
-	}
-
 	for ; i < capacity; i++ {
-		vectorBinaryOp(srcAData, srcBData, dstData, srcAItemSize, srcBItemSize, dstItemSize, uintptr(i), op)
+		apply(uintptr(i))
 	}
 }
 
 //go:inline
-//go:nosplit
-func vectorUnaryReadOnlyOp[T foundation.Numeric](
-	srcData unsafe.Pointer,
-	srcItemSize uintptr,
-	idx uintptr,
-	op func(a T),
-) {
-	v := (*(*T)(unsafe.Add(srcData, idx*srcItemSize)))
-	op(v)
-}
-
-//go:inline
-//go:nosplit
-func vectorUnaryOp[T, P foundation.Numeric](
-	srcData, dstData unsafe.Pointer,
-	srcItemSize, dstItemSize uintptr,
-	idx uintptr,
-	op func(a T) P,
-) {
-	srcV := (*(*T)(unsafe.Add(srcData, idx*srcItemSize)))
-	newV := op(srcV)
-	*(*P)(unsafe.Add(dstData, idx*dstItemSize)) = newV
-}
-
-//go:inline
-//go:nosplit
-func vectorBinaryReadOnlyOp[T, U foundation.Numeric](
-	srcAData, srcBData unsafe.Pointer,
-	srcAItemSize, srcBItemSize uintptr,
-	idx uintptr,
-	op func(a T, b U),
-) {
-	srcAV := (*(*T)(unsafe.Add(srcAData, idx*srcAItemSize)))
-	srcBV := (*(*U)(unsafe.Add(srcBData, idx*srcBItemSize)))
-	op(srcAV, srcBV)
-}
-
-//go:inline
-//go:nosplit
-func vectorBinaryOp[T, U, P foundation.Numeric](
-	srcAData, srcBData, dstData unsafe.Pointer,
-	srcAItemSize, srcBItemSize, dstItemSize uintptr,
-	idx uintptr,
-	op func(a T, b U) P,
-) {
-	srcAV := (*(*T)(unsafe.Add(srcAData, idx*srcAItemSize)))
-	srcBV := (*(*U)(unsafe.Add(srcBData, idx*srcBItemSize)))
-	newV := op(srcAV, srcBV)
-	*(*P)(unsafe.Add(dstData, idx*dstItemSize)) = newV
-}
-
-//go:inline
-func vectorGetPtrAtIdx[T foundation.Numeric](instance *Vector[T], baseAddr unsafe.Pointer, idx uint64) unsafe.Pointer {
-	return unsafe.Add(vectorComputeDataAddr(instance, baseAddr), idx*instance.itemSize)
-}
-
-//go:inline
-func vectorGuaranteeIdxValidity[T foundation.Numeric](instance *Vector[T], idx uint64) error {
-	idxValid := idx < instance.capacity
-
-	if !idxValid {
-		return fmt.Errorf("invalid index: %v, must be between 0 and %v (exclusive)", idx, instance.capacity)
+func vectorUnrolledStride2[T foundation.Numeric](capacity uint64, apply func(idx uintptr)) {
+	var i uint64
+	for ; i+1 < capacity; i += 2 {
+		apply(uintptr(i + 0))
+		apply(uintptr(i + 1))
 	}
-
-	return nil
+	for ; i < capacity; i++ {
+		apply(uintptr(i))
+	}
 }
 
 //go:inline
-func vectorComputeDataAddr[T foundation.Numeric](instance *Vector[T], baseAddr unsafe.Pointer) unsafe.Pointer {
-	return unsafe.Add(baseAddr, instance.dataAddrOffset)
+func vectorUnrolledStride1[T foundation.Numeric](capacity uint64, apply func(idx uintptr)) {
+	for i := uint64(0); i < capacity; i++ {
+		apply(uintptr(i))
+	}
+}
+
+//go:inline
+func vectorUnrolledGeneric[T foundation.Numeric](capacity uint64, stride uint64, apply func(idx uintptr)) {
+	var i uint64
+	for ; i+stride <= capacity; i += stride {
+		for j := uint64(0); j < stride; j++ {
+			apply(uintptr(i + j))
+		}
+	}
+	for ; i < capacity; i++ {
+		apply(uintptr(i))
+	}
 }
