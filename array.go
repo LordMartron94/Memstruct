@@ -317,17 +317,26 @@ func ArrayForEachUnsafe[T any](array memcore.MarkRaw, fn func(ptr unsafe.Pointer
 // ArrayStrideForEachUnsafe calls a function for every element in the array.
 // It visits every stride-th element.
 //
+// For the tail it calls the tailFn which is supposed to process one element at once.
+//
 //go:inline
-func ArrayStrideForEachUnsafe[T any](array memcore.MarkRaw, fn func(ptr unsafe.Pointer, idx uint64), stride uint64) {
+func ArrayStrideForEachUnsafe[T any](
+	array memcore.MarkRaw,
+	strideFn func(ptr unsafe.Pointer, idx uint64),
+	tailFn func(ptr unsafe.Pointer, idx uint64),
+	stride uint64,
+) {
 	baseAddr, instance := memcore.MemcoreMarkDereferenceObjectAlt[Array[T]](array)
 
-	for idx := uint64(0); idx < instance.capacity; idx++ {
-		if idx%stride != 0 {
-			continue
-		}
-
+	idx := uint64(0)
+	for ; idx+stride < instance.capacity; idx += stride {
 		ptr := arrayGetPtrAtIdx(instance, baseAddr, idx)
-		fn(ptr, idx)
+		strideFn(ptr, idx)
+	}
+
+	for ; idx < instance.capacity; idx++ {
+		ptr := arrayGetPtrAtIdx(instance, baseAddr, idx)
+		tailFn(ptr, idx)
 	}
 }
 

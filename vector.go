@@ -222,9 +222,16 @@ func VectorForEachUnsafe[T foundation.Numeric](vector memcore.MarkRaw, fn func(p
 // VectorStrideForEachUnsafe calls a function for every element in the vector.
 // It visits every stride-th element.
 //
+// For the tail it calls the tailFn which is supposed to process one element at once.
+//
 //go:inline
-func VectorStrideForEachUnsafe[T foundation.Numeric](array memcore.MarkRaw, fn func(ptr unsafe.Pointer, idx uint64), stride uint64) {
-	ArrayStrideForEachUnsafe[T](array, fn, stride)
+func VectorStrideForEachUnsafe[T foundation.Numeric](
+	vector memcore.MarkRaw,
+	fn func(ptr unsafe.Pointer, idx uint64),
+	tailFn func(ptr unsafe.Pointer, idx uint64),
+	stride uint64,
+) {
+	ArrayStrideForEachUnsafe[T](vector, fn, tailFn, stride)
 }
 
 // VectorIterate allows you to iterate over the vector efficiently.
