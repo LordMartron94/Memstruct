@@ -6,6 +6,24 @@ import (
 	"unsafe"
 )
 
+func init() {
+	memcore.MemcoreSerializerRegister(
+		func(inst *String) []byte {
+			if inst.length == 0 {
+				return nil
+			}
+
+			mark, ok := memcore.MemcoreObjectResolve(inst.objectID)
+			if !ok {
+				panic(fmt.Sprintf("memstruct.String: unresolved ObjectID %d", inst.objectID))
+			}
+			base, real := memcore.MemcoreMarkDereferenceObjectAlt[String](mark)
+			data := unsafe.Slice((*byte)(unsafe.Add(base, real.dataAddrOffset)), real.length)
+			return data
+		},
+	)
+}
+
 // String is a manually managed, immutable string representation stored in manual memory.
 //
 // Memory Layout:
@@ -20,6 +38,7 @@ import (
 type String struct {
 	dataAddrOffset uintptr
 	length         uint64
+	objectID       memcore.ObjectID
 }
 
 // StringRequiredBytesGet returns total required bytes for storing a given Go string.
@@ -62,13 +81,13 @@ func StringInitializeAt(strAddr memcore.MarkRaw, value string) {
 		return
 	}
 
-	// Copy UTF-8 bytes directly into manual memory
 	src := unsafe.StringData(value)
 	memcore.MemoryMoveNoHeapPointers(dataStart, unsafe.Pointer(src), uintptr(dataLen))
 
 	*strPtr = String{
 		dataAddrOffset: uintptr(headerSize),
 		length:         uint64(dataLen),
+		objectID:       memcore.MemcoreObjectRegister(strAddr),
 	}
 }
 
@@ -131,8 +150,7 @@ func StringLengthGet(str memcore.MarkRaw) uint64 {
 //
 //go:inline
 func StringDataPtrGet(str memcore.MarkRaw) unsafe.Pointer {
-	base := memcore.MemcoreMarkDereference(str)
-	inst := memcore.MemcoreMarkDereferenceObject[String](str)
+	base, inst := memcore.MemcoreMarkDereferenceObjectAlt[String](str)
 	return unsafe.Add(base, inst.dataAddrOffset)
 }
 
@@ -172,6 +190,47 @@ func StringEquals(a, b memcore.MarkRaw) bool {
 	bData := StringDataPtrGet(b)
 
 	return memcore.MemoryCompareNoHeapPointers(aData, bData, uintptr(aPtr.length))
+}
+
+// StringEqualsValue compares two String values directly by value,
+// without using any MarkRaw or region-level dereferencing.
+//
+// It assumes both String values were initialized in Go memory
+// (not in manual memcore regions), meaning their data immediately
+// follows the header in memory layout.
+//
+//go:inline
+func StringEqualsValue(a, b String) bool {
+	if a.objectID != 0 && a.objectID == b.objectID {
+		return true
+	}
+
+	var aData, bData unsafe.Pointer
+	var aLen, bLen uint64
+
+	if markA, ok := memcore.MemcoreObjectResolve(a.objectID); ok {
+		baseA, realA := memcore.MemcoreMarkDereferenceObjectAlt[String](markA)
+		aData = unsafe.Add(baseA, realA.dataAddrOffset)
+		aLen = realA.length
+	} else {
+		aData = unsafe.Add(unsafe.Pointer(&a), a.dataAddrOffset)
+		aLen = a.length
+	}
+
+	if markB, ok := memcore.MemcoreObjectResolve(b.objectID); ok {
+		baseB, realB := memcore.MemcoreMarkDereferenceObjectAlt[String](markB)
+		bData = unsafe.Add(baseB, realB.dataAddrOffset)
+		bLen = realB.length
+	} else {
+		bData = unsafe.Add(unsafe.Pointer(&b), b.dataAddrOffset)
+		bLen = b.length
+	}
+
+	if aLen != bLen {
+		return false
+	}
+
+	return memcore.MemoryCompareNoHeapPointers(aData, bData, uintptr(aLen))
 }
 
 // StringClear zeroes out the string data but preserves the header.
