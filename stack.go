@@ -35,7 +35,7 @@ func StackInitializeAt[T any](stackAddr memcore.MarkRaw, capacity uint64) {
 	stackHeaderAlignment := memcore.AlignOf[Stack[T]]()
 
 	// Create pointer for nested array header
-	arrayPtr := memcore.MemcoreMarkAlignedOffsetFrom(
+	arrayPtr, _ := memcore.MemcoreMarkAlignedOffsetFrom(
 		stackAddr,
 		uintptr(stackHeaderSize),
 		stackHeaderAlignment,

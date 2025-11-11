@@ -7,19 +7,14 @@ import (
 )
 
 func init() {
-	memcore.MemcoreSerializerRegister(
-		func(inst *String) []byte {
+	memcore.MemcoreViewRegister[String](
+		func(mark memcore.MarkRaw) (unsafe.Pointer, uint64) {
+			base, inst := memcore.MemcoreMarkDereferenceObjectAlt[String](mark)
 			if inst.length == 0 {
-				return nil
+				return nil, 0
 			}
-
-			mark, ok := memcore.MemcoreObjectResolve(inst.objectID)
-			if !ok {
-				panic(fmt.Sprintf("memstruct.String: unresolved ObjectID %d", inst.objectID))
-			}
-			base, real := memcore.MemcoreMarkDereferenceObjectAlt[String](mark)
-			data := unsafe.Slice((*byte)(unsafe.Add(base, real.dataAddrOffset)), real.length)
-			return data
+			data := unsafe.Add(base, inst.dataAddrOffset)
+			return data, inst.length
 		},
 	)
 }
@@ -192,45 +187,38 @@ func StringEquals(a, b memcore.MarkRaw) bool {
 	return memcore.MemoryCompareNoHeapPointers(aData, bData, uintptr(aPtr.length))
 }
 
-// StringEqualsValue compares two String values directly by value,
-// without using any MarkRaw or region-level dereferencing.
+// StringEqualsDirect compares two manually managed strings for equality.
+// The caller must guarantee that the pointers are still valid and come from a memstruct.String header.
 //
-// It assumes both String values were initialized in Go memory
-// (not in manual memcore regions), meaning their data immediately
-// follows the header in memory layout.
-//
+//go:nosplit
 //go:inline
-func StringEqualsValue(a, b String) bool {
-	if a.objectID != 0 && a.objectID == b.objectID {
-		return true
-	}
-
-	var aData, bData unsafe.Pointer
-	var aLen, bLen uint64
-
-	if markA, ok := memcore.MemcoreObjectResolve(a.objectID); ok {
-		baseA, realA := memcore.MemcoreMarkDereferenceObjectAlt[String](markA)
-		aData = unsafe.Add(baseA, realA.dataAddrOffset)
-		aLen = realA.length
-	} else {
-		aData = unsafe.Add(unsafe.Pointer(&a), a.dataAddrOffset)
-		aLen = a.length
-	}
-
-	if markB, ok := memcore.MemcoreObjectResolve(b.objectID); ok {
-		baseB, realB := memcore.MemcoreMarkDereferenceObjectAlt[String](markB)
-		bData = unsafe.Add(baseB, realB.dataAddrOffset)
-		bLen = realB.length
-	} else {
-		bData = unsafe.Add(unsafe.Pointer(&b), b.dataAddrOffset)
-		bLen = b.length
-	}
-
-	if aLen != bLen {
+func StringEqualsDirect(a, b *String) bool {
+	if a.length != b.length {
 		return false
 	}
 
-	return memcore.MemoryCompareNoHeapPointers(aData, bData, uintptr(aLen))
+	aData := stringDataPtrGetDirect(a)
+	bData := stringDataPtrGetDirect(b)
+	n := uintptr(a.length)
+
+	if aData == bData || n == 0 {
+		return true
+	}
+
+	return memcore.MemoryCompareNoHeapPointers(aData, bData, n)
+}
+
+// MarkFromString returns the associated MarkRaw for this string if it exists.
+//
+//go:nosplit
+//go:inline
+func MarkFromString(str String) memcore.MarkRaw {
+	mark, ok := memcore.MemcoreObjectResolve(str.objectID)
+	if !ok {
+		panic(fmt.Sprintf("memstruct.String: unresolved ObjectID %d", str.objectID))
+	}
+
+	return mark
 }
 
 // StringClear zeroes out the string data but preserves the header.
@@ -254,4 +242,9 @@ func StringClear(str memcore.MarkRaw) {
 //go:inline
 func StringIsEmpty(str memcore.MarkRaw) bool {
 	return memcore.MemcoreMarkDereferenceObject[String](str).length == 0
+}
+
+//go:inline
+func stringDataPtrGetDirect(str *String) unsafe.Pointer {
+	return unsafe.Add(unsafe.Pointer(str), str.dataAddrOffset)
 }

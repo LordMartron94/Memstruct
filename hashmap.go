@@ -3,242 +3,343 @@ package memstruct
 import (
 	"fmt"
 	"foundation/hash"
+	"math/bits"
 	"memcore"
 	"unsafe"
 )
 
-var hasher *hash.XXH3Hasher
+// Implementation inspired by Go's SwissTable map design:
+// https://go.dev/blog/swisstable
 
-func init() {
-	hasher = hash.XXH3HasherCreateWithSeed(42)
-}
+type (
+	ctrl      = uint8
+	ctrlGroup = uint64
+	bitset    = uint64
+)
 
-// KeyValuePair represents a pair between an arbitrary key and a value.
-// It provides some utility functions to use in certain scenarios.
+const (
+	ctrlEmpty   ctrl = 0b10000000
+	ctrlDeleted ctrl = 0b11111110
+
+	bitsetLSB     bitset = 0x0101010101010101
+	bitsetMSB     bitset = 0x8080808080808080
+	bitsetEmpty   bitset = bitsetLSB * uint64(ctrlEmpty)
+	bitsetDeleted bitset = bitsetLSB * uint64(ctrlDeleted)
+)
+
+var hasher = hash.XXH3HasherCreateWithSeed(42)
+
+// KeyValuePair stores a key–value pair inside manual memory.
 type KeyValuePair[TKey, TValue any] struct {
-	key     TKey
 	value   TValue
-	keyHash uint64
-	active  bool
+	keyMark memcore.MarkRaw
+	active  uint8
 }
 
-func (k KeyValuePair[TKey, TValue]) Key() TKey {
-	return k.key
-}
+func (k *KeyValuePair[TKey, TValue]) Value() TValue { return k.value }
 
-func (k KeyValuePair[TKey, TValue]) Value() TValue {
-	return k.value
-}
-
-func (k KeyValuePair[TKey, TValue]) KeyHash() uint64 {
-	return k.keyHash
-}
-
-// HashMap is a custom map implementation.
+// HashMap is a SwissTable-like open-addressing hashmap.
 type HashMap[TKey, TValue any] struct {
-	data          memcore.MarkRaw // Array[KeyValuePair[TKey, TValue]]
-	capacity      uint64
-	keyComparerID memcore.FunctionID
+	data, metaData        memcore.MarkRaw // backing arrays
+	capacity, logicalBins uint64
+	keyComparerID         memcore.FunctionID
+	keyMarkRetrieverID    memcore.FunctionID
 }
 
-func HashMapRequiredBytesGet[TKey, TValue any](capacityElements uint64) uint64 {
-	headerSize := memcore.SizeOf[HashMap[TKey, TValue]]()
-	dataSize := ArrayRequiredBytesGet[KeyValuePair[TKey, TValue]](capacityElements)
-	return headerSize + dataSize
+// KeyComparer must return true if *a and *b represent the same key.
+type KeyComparer[TKey any] func(a, b *TKey) bool
+
+// KeyMarkRetriever must return the mark of the given key.
+type KeyMarkRetriever[TKey any] func(key TKey) memcore.MarkRaw
+
+// HashMapRequiredBytesGet returns the total size (in bytes) needed for allocation.
+func HashMapRequiredBytesGet[TKey, TValue any](capacity uint64) uint64 {
+	capacity = memcore.AlignUp(capacity, 8)
+	numGroups := capacity / 8
+
+	header := memcore.SizeOf[HashMap[TKey, TValue]]()
+	meta := ArrayRequiredBytesGet[ctrlGroup](numGroups)
+	data := ArrayRequiredBytesGet[KeyValuePair[TKey, TValue]](capacity)
+
+	offset := uint64(0)
+	offset = memcore.AlignUp(offset, memcore.AlignOf[HashMap[TKey, TValue]]()) + header
+	offset = memcore.AlignUp(offset, ArrayRequiredAlignmentGet[ctrlGroup]()) + meta
+	offset = memcore.AlignUp(offset, ArrayRequiredAlignmentGet[KeyValuePair[TKey, TValue]]()) + data
+	return offset
 }
 
+// HashMapRequiredAlignmentGet returns the required alignment for allocation.
 func HashMapRequiredAlignmentGet[TKey, TValue any]() uint64 {
-	return max(memcore.AlignOf[HashMap[TKey, TValue]](), ArrayRequiredAlignmentGet[KeyValuePair[TKey, TValue]]())
-}
-
-// KeyComparer must return true when two keys are considered equal.
-type KeyComparer[TKey any] func(a, b TKey) bool
-
-// HashMapInitializeAt initializes an instance of a hashmap for type TKey and TValue at a specific memory address.
-// Ensure the address is properly aligned and has the right size.
-//
-// ⚠️ capacity is in elements, not bytes.
-func HashMapInitializeAt[TKey, TValue any](addr memcore.MarkRaw, capacityElements uint64, keyFn KeyComparer[TKey]) {
-	headerSize := memcore.SizeOf[HashMap[TKey, TValue]]()
-	headerAlignment := memcore.AlignOf[HashMap[TKey, TValue]]()
-
-	dataAddr := memcore.MemcoreMarkAlignedOffsetFrom(addr, uintptr(headerSize), headerAlignment)
-	ArrayInitializeAt[KeyValuePair[TKey, TValue]](dataAddr, capacityElements)
-
-	if serializer := memcore.MemcoreRegisteredSerializerGet[TKey](); serializer == nil {
-		panic("invalid TKey type: cannot serialize")
-	}
-
-	keyFnID := memcore.MemcoreFunctionRegisterTyped(keyFn)
-
-	header := memcore.MemcoreMarkDereferenceObject[HashMap[TKey, TValue]](addr)
-	*header = HashMap[TKey, TValue]{
-		data:          dataAddr,
-		capacity:      capacityElements,
-		keyComparerID: keyFnID,
-	}
-}
-
-// HashMapItemAdd adds an item into the map.
-// It overwrites the given value if the key already exists in the map.
-// It panics if there is no space left in the map.
-// HashMapItemAdd inserts or overwrites a key-value pair.
-// Uses open addressing with linear probing.
-// Panics if the table is full.
-func HashMapItemAdd[TKey, TValue any](instance memcore.MarkRaw, key TKey, value TValue) {
-	header := memcore.MemcoreMarkDereferenceObject[HashMap[TKey, TValue]](instance)
-
-	bytes, _ := memcore.MemcoreSerialize(&key)
-	keyHash := hash.XXH3HasherHash64(hasher, bytes)
-
-	kvp, found := hashMapFindSlot(header, keyHash, &key)
-	if found {
-		kvp.value = value
-	} else {
-		*kvp = KeyValuePair[TKey, TValue]{
-			key:     key,
-			value:   value,
-			keyHash: keyHash,
-			active:  true,
-		}
-	}
-}
-
-// HashMapKeyValuePairPtrGet retrieves the selected keyvalue pair as a pointer from the hashmap.
-// If it is not existent within the map, it returns an error.
-// This can not be stored inside manually managed memory, nor is it guaranteed to be stable when stored anywhere.
-func HashMapKeyValuePairPtrGet[TKey, TValue any](instance memcore.MarkRaw, key TKey) (*KeyValuePair[TKey, TValue], error) {
-	header := memcore.MemcoreMarkDereferenceObject[HashMap[TKey, TValue]](instance)
-
-	bytes, _ := memcore.MemcoreSerialize(&key)
-	keyHash := hash.XXH3HasherHash64(hasher, bytes)
-
-	kvp, found := hashMapFindSlot(header, keyHash, &key)
-	if !found || !kvp.active {
-		return nil, fmt.Errorf("item with key %v not found", key)
-	}
-	return kvp, nil
-}
-
-// HashMapKeyValuePairGet retrieves the selected keyvalue pair from the hashmap.
-// If it is not existent within the map, it returns an error.
-func HashMapKeyValuePairGet[TKey, TValue any](instance memcore.MarkRaw, key TKey) (KeyValuePair[TKey, TValue], error) {
-	if kvp, err := HashMapKeyValuePairPtrGet[TKey, TValue](instance, key); err != nil {
-		var zero KeyValuePair[TKey, TValue]
-		return zero, err
-	} else {
-		return *kvp, nil
-	}
-}
-
-// HashMapItemGet retrieves the selected value from the hashmap.
-// If it is not existent within the map, it returns an error.
-func HashMapItemGet[TKey, TValue any](instance memcore.MarkRaw, key TKey) (TValue, error) {
-	if kvp, err := HashMapKeyValuePairGet[TKey, TValue](instance, key); err != nil {
-		var zero TValue
-		return zero, err
-	} else {
-		return kvp.value, nil
-	}
-}
-
-// HashMapItemPtrGet retrieves the selected value as a pointer from the hashmap.
-// If it is not existent within the map, it returns an error.
-// This can not be stored inside manually managed memory, nor is it guaranteed to be stable when stored anywhere.
-func HashMapItemPtrGet[TKey, TValue any](instance memcore.MarkRaw, key TKey) (*TValue, error) {
-	if kvp, err := HashMapKeyValuePairPtrGet[TKey, TValue](instance, key); err != nil {
-		return nil, err
-	} else {
-		return &kvp.value, nil
-	}
-}
-
-// HashMapItemDelete deletes an item from the map.
-// If the item is not in the map, this does nothing (but still costs computation)
-func HashMapItemDelete[TKey, TValue any](instance memcore.MarkRaw, key TKey) {
-	header := memcore.MemcoreMarkDereferenceObject[HashMap[TKey, TValue]](instance)
-
-	bytes, _ := memcore.MemcoreSerialize(&key)
-	keyHash := hash.XXH3HasherHash64(hasher, bytes)
-
-	kvp, found := hashMapFindSlot(header, keyHash, &key)
-	if found {
-		kvp.active = false
-	}
-}
-
-// HashMapClear clears the map, allowing all keys to be inserted again.
-// This only sets the metadata of the pairs to inactive, it does NOT zero memory.
-func HashMapClear[TKey, TValue any](instance memcore.MarkRaw) {
-	header := memcore.MemcoreMarkDereferenceObject[HashMap[TKey, TValue]](instance)
-
-	itemSize := memcore.SizeOf[KeyValuePair[TKey, TValue]]()
-
-	ArrayStrideForEachUnsafe[KeyValuePair[TKey, TValue]](
-		header.data,
-		func(ptr unsafe.Pointer, idx uint64) {
-			(*KeyValuePair[TKey, TValue])(ptr).active = false
-			(*KeyValuePair[TKey, TValue])(unsafe.Add(ptr, itemSize*1)).active = false
-			(*KeyValuePair[TKey, TValue])(unsafe.Add(ptr, itemSize*2)).active = false
-			(*KeyValuePair[TKey, TValue])(unsafe.Add(ptr, itemSize*3)).active = false
-			(*KeyValuePair[TKey, TValue])(unsafe.Add(ptr, itemSize*4)).active = false
-			(*KeyValuePair[TKey, TValue])(unsafe.Add(ptr, itemSize*5)).active = false
-			(*KeyValuePair[TKey, TValue])(unsafe.Add(ptr, itemSize*6)).active = false
-			(*KeyValuePair[TKey, TValue])(unsafe.Add(ptr, itemSize*7)).active = false
-		},
-		func(ptr unsafe.Pointer, idx uint64) {
-			(*KeyValuePair[TKey, TValue])(ptr).active = false
-		}, // tail fn
-		8, // stride of 8
+	return max(
+		memcore.AlignOf[HashMap[TKey, TValue]](),
+		ArrayRequiredAlignmentGet[ctrlGroup](),
+		ArrayRequiredAlignmentGet[KeyValuePair[TKey, TValue]](),
 	)
 }
 
-// HashMapClearAndZero clears the map, allowing all keys to be inserted again.
-// This zeroes the underlying memory.
-func HashMapClearAndZero[TKey, TValue any](instance memcore.MarkRaw) {
-	header := memcore.MemcoreMarkDereferenceObject[HashMap[TKey, TValue]](instance)
-	ArrayClear[KeyValuePair[TKey, TValue]](header.data)
-}
+// HashMapInitializeAt constructs a new hashmap in-place at the given memory address.
+func HashMapInitializeAt[TKey, TValue any](
+	addr memcore.MarkRaw,
+	capacity uint64,
+	keyCmp KeyComparer[TKey],
+	keyMark KeyMarkRetriever[TKey],
+) {
+	capacity = memcore.AlignUp(capacity, 8)
+	numGroups := capacity / 8
 
-// -------------------------------------------------------- PRIVATE HELPERS
+	headerSize := memcore.SizeOf[HashMap[TKey, TValue]]()
+	metaSize := ArrayRequiredBytesGet[ctrlGroup](numGroups)
+	metaAlign := ArrayRequiredAlignmentGet[ctrlGroup]()
+	dataAlign := ArrayRequiredAlignmentGet[KeyValuePair[TKey, TValue]]()
 
-//go:inline
-//go:nosplit
-func hashMapFindSlot[TKey, TValue any](
-	header *HashMap[TKey, TValue],
-	keyHash uint64,
-	key *TKey,
-) (kvp *KeyValuePair[TKey, TValue], found bool) {
-	comparer := memcore.MemcoreFunctionRetrieveTyped[KeyComparer[TKey]](header.keyComparerID)
+	metaAddr, _ := memcore.MemcoreMarkAlignedOffsetFrom(addr, uintptr(headerSize), metaAlign)
+	ArrayInitializeAt[ctrlGroup](metaAddr, numGroups)
+	ArrayForEachUnsafe[ctrlGroup](metaAddr, func(p unsafe.Pointer, _ uint64) { *(*uint64)(p) = bitsetEmpty })
 
-	start := hashToArrayIDX(header, keyHash)
-	idx := start
+	afterMeta := memcore.MemcoreMarkOffsetFrom(metaAddr, uintptr(metaSize))
+	dataAddr, _ := memcore.MemcoreMarkAlignedOffsetFrom(afterMeta, 0, dataAlign)
+	ArrayInitializeAt[KeyValuePair[TKey, TValue]](dataAddr, capacity)
 
-	for {
-		kvp = ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](header.data, idx)
-
-		if !kvp.active {
-			return kvp, false
-		}
-
-		if kvp.keyHash == keyHash {
-			if comparer(kvp.key, *key) {
-				return kvp, true
-			}
-		}
-
-		idx++
-		if idx == header.capacity {
-			idx = 0
-		}
-		if idx == start {
-			panic(fmt.Errorf("no space left in map with capacity: %d", header.capacity))
-		}
+	header := memcore.MemcoreMarkDereferenceObject[HashMap[TKey, TValue]](addr)
+	*header = HashMap[TKey, TValue]{
+		data:               dataAddr,
+		metaData:           metaAddr,
+		capacity:           capacity,
+		logicalBins:        numGroups,
+		keyComparerID:      memcore.MemcoreFunctionRegisterTyped(keyCmp),
+		keyMarkRetrieverID: memcore.MemcoreFunctionRegisterTyped(keyMark),
 	}
 }
 
-//go:inline
+// HashMapItemAdd inserts or updates a key–value pair.
+func HashMapItemAdd[TKey, TValue any](instance memcore.MarkRaw, key TKey, value TValue) {
+	h := memcore.MemcoreMarkDereferenceObjectUnsafe[HashMap[TKey, TValue]](instance)
+
+	retrieve := memcore.MemcoreFunctionRetrieveTyped[KeyMarkRetriever[TKey]](h.keyMarkRetrieverID)
+	keyMark := retrieve(key)
+	keyPtr := memcore.MemcoreMarkDereferenceObjectUnsafe[TKey](keyMark)
+
+	keyHash := hash.XXH3HasherHash64View[TKey](hasher, keyMark)
+	h1, h2 := computeHashParts(keyHash)
+
+	groupIDX, slot, found, hasFree, delGroup, delSlot := hashMapProbe(h, h1, h2, keyPtr)
+	if found {
+		ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot).value = value
+		return
+	}
+	if hasFree {
+		if groupIDX == ^uint64(0) {
+			groupIDX, slot = delGroup, delSlot
+		}
+		pair := ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot)
+		pair.value, pair.keyMark, pair.active = value, keyMark, 1
+
+		ctrlPtr := ArrayItemPtrGetAtUnsafe[ctrlGroup](h.metaData, groupIDX)
+		*ctrlPtr = updateCtrlByte(*ctrlPtr, slot, ctrl(h2))
+		return
+	}
+	panic("HashMapItemAdd: no space left")
+}
+
+// HashMapItemGet retrieves the value for a key.
+func HashMapItemGet[TKey, TValue any](instance memcore.MarkRaw, key TKey) (TValue, error) {
+	h := memcore.MemcoreMarkDereferenceObjectUnsafe[HashMap[TKey, TValue]](instance)
+
+	retrieve := memcore.MemcoreFunctionRetrieveTyped[KeyMarkRetriever[TKey]](h.keyMarkRetrieverID)
+	keyMark := retrieve(key)
+	keyPtr := memcore.MemcoreMarkDereferenceObjectUnsafe[TKey](keyMark)
+
+	keyHash := hash.XXH3HasherHash64View[TKey](hasher, keyMark)
+	h1, h2 := computeHashParts(keyHash)
+
+	groupIDX, slot, found, _, _, _ := hashMapProbe(h, h1, h2, keyPtr)
+	if !found {
+		var zero TValue
+		return zero, fmt.Errorf("key not found")
+	}
+	return ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot).value, nil
+}
+
+// HashMapItemPtrGet returns a pointer to a value (not safe to persist).
+func HashMapItemPtrGet[TKey, TValue any](instance memcore.MarkRaw, key TKey) (*TValue, error) {
+	h := memcore.MemcoreMarkDereferenceObjectUnsafe[HashMap[TKey, TValue]](instance)
+
+	retrieve := memcore.MemcoreFunctionRetrieveTyped[KeyMarkRetriever[TKey]](h.keyMarkRetrieverID)
+	keyMark := retrieve(key)
+	keyPtr := memcore.MemcoreMarkDereferenceObjectUnsafe[TKey](keyMark)
+
+	keyHash := hash.XXH3HasherHash64View[TKey](hasher, keyMark)
+	h1, h2 := computeHashParts(keyHash)
+
+	groupIDX, slot, found, _, _, _ := hashMapProbe(h, h1, h2, keyPtr)
+	if !found {
+		return nil, fmt.Errorf("key not found")
+	}
+	pair := ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot)
+	return &pair.value, nil
+}
+
+// HashMapItemDelete marks an entry as deleted.
+func HashMapItemDelete[TKey, TValue any](instance memcore.MarkRaw, key TKey) {
+	h := memcore.MemcoreMarkDereferenceObjectUnsafe[HashMap[TKey, TValue]](instance)
+
+	retrieve := memcore.MemcoreFunctionRetrieveTyped[KeyMarkRetriever[TKey]](h.keyMarkRetrieverID)
+	keyMark := retrieve(key)
+	keyPtr := memcore.MemcoreMarkDereferenceObjectUnsafe[TKey](keyMark)
+
+	keyHash := hash.XXH3HasherHash64View[TKey](hasher, keyMark)
+	h1, h2 := computeHashParts(keyHash)
+
+	groupIDX, slot, found, _, _, _ := hashMapProbe(h, h1, h2, keyPtr)
+	if !found {
+		return
+	}
+
+	pair := ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot)
+	pair.active = 0
+
+	ctrlPtr := ArrayItemPtrGetAtUnsafe[ctrlGroup](h.metaData, groupIDX)
+	*ctrlPtr = updateCtrlByte(*ctrlPtr, slot, ctrlDeleted)
+}
+
+// HashMapClear clears the map by marking all slots inactive and resetting control bytes.
+// This does NOT zero memory, only resets metadata and active flags.
+//
+// It uses an unrolled loop for each stride of 8 elements (the Swiss group size).
+// This design eliminates branches and allows better compiler optimization / pipelining.
+func HashMapClear[TKey, TValue any](instance memcore.MarkRaw) {
+	h := memcore.MemcoreMarkDereferenceObjectUnsafe[HashMap[TKey, TValue]](instance)
+
+	itemSize := memcore.SizeOf[KeyValuePair[TKey, TValue]]()
+
+	// ─── Clear all key-value active flags ───
+	ArrayStrideForEachUnsafe[KeyValuePair[TKey, TValue]](
+		h.data,
+		func(ptr unsafe.Pointer, _ uint64) {
+			(*KeyValuePair[TKey, TValue])(ptr).active = 0
+			(*KeyValuePair[TKey, TValue])(unsafe.Add(ptr, itemSize*1)).active = 0
+			(*KeyValuePair[TKey, TValue])(unsafe.Add(ptr, itemSize*2)).active = 0
+			(*KeyValuePair[TKey, TValue])(unsafe.Add(ptr, itemSize*3)).active = 0
+			(*KeyValuePair[TKey, TValue])(unsafe.Add(ptr, itemSize*4)).active = 0
+			(*KeyValuePair[TKey, TValue])(unsafe.Add(ptr, itemSize*5)).active = 0
+			(*KeyValuePair[TKey, TValue])(unsafe.Add(ptr, itemSize*6)).active = 0
+			(*KeyValuePair[TKey, TValue])(unsafe.Add(ptr, itemSize*7)).active = 0
+		},
+		func(ptr unsafe.Pointer, _ uint64) {
+			(*KeyValuePair[TKey, TValue])(ptr).active = 0
+		},
+		8, // stride of 8 (group size)
+	)
+
+	// ─── Reset metadata control groups ───
+	ArrayForEachUnsafe[ctrlGroup](h.metaData, func(ptr unsafe.Pointer, _ uint64) {
+		*(*uint64)(ptr) = bitsetEmpty
+	})
+}
+
+// HashMapClearAndZero fully zeroes metadata and data sections.
+func HashMapClearAndZero[TKey, TValue any](instance memcore.MarkRaw) {
+	h := memcore.MemcoreMarkDereferenceObjectUnsafe[HashMap[TKey, TValue]](instance)
+	ArrayForEachUnsafe[ctrlGroup](h.metaData, func(p unsafe.Pointer, _ uint64) { *(*uint64)(p) = bitsetEmpty })
+	ArrayClear[KeyValuePair[TKey, TValue]](h.data)
+}
+
+// ------------------------------------------------------------
+// Private Helpers (inline hot-path operations)
+// ------------------------------------------------------------
+
 //go:nosplit
-func hashToArrayIDX[TKey, TValue any](instance *HashMap[TKey, TValue], hash uint64) uint64 {
-	return hash % instance.capacity
+func hashMapProbe[TKey, TValue any](
+	h *HashMap[TKey, TValue],
+	h1 uint64, h2 uint8, key *TKey,
+) (groupIDX, slot uint64, found, hasFree bool, delGroup, delSlot uint64) {
+	const noIdx = ^uint64(0)
+	groupIDX, groupMask := h1%h.logicalBins, h.logicalBins-1
+	firstEmptyGroup, firstEmptySlot, firstDelGroup, firstDelSlot := noIdx, noIdx, noIdx, noIdx
+
+	keyCmp := memcore.MemcoreFunctionRetrieveTyped[KeyComparer[TKey]](h.keyComparerID)
+
+	for probe := uint64(0); probe < h.logicalBins; probe++ {
+		ctrl := ArrayItemGetAtUnsafe[ctrlGroup](h.metaData, groupIDX)
+
+		// 1. Match possible h2 candidates
+		match := ctrlGroupMatchH2(ctrl, h2)
+		for match != 0 {
+			s := bitsetNextIndex(match)
+			match &= match - 1
+			pair := ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+s)
+			if pair.active != 0 {
+				pairKey := memcore.MemcoreMarkDereferenceObjectUnsafe[TKey](pair.keyMark)
+				if keyCmp(pairKey, key) {
+					return groupIDX, s, true, false, noIdx, noIdx
+				}
+			}
+		}
+
+		// 2. Record first empty
+		empty := ctrlGroupMatchEmpty(ctrl)
+		if empty != 0 {
+			if firstEmptyGroup == noIdx {
+				firstEmptyGroup, firstEmptySlot = groupIDX, bitsetNextIndex(empty)
+			}
+			break // empty stops probe for lookup
+		}
+
+		// 3. Record first deleted (if any)
+		deletedOnly := ctrlGroupMatchEmptyOrDeleted(ctrl) &^ empty
+		if deletedOnly != 0 && firstDelGroup == noIdx {
+			firstDelGroup, firstDelSlot = groupIDX, bitsetNextIndex(deletedOnly)
+		}
+
+		groupIDX = (groupIDX + 1) & groupMask // wrap faster than %
+	}
+
+	if firstEmptyGroup != noIdx {
+		return firstEmptyGroup, firstEmptySlot, false, true, firstDelGroup, firstDelSlot
+	}
+	if firstDelGroup != noIdx {
+		return firstDelGroup, firstDelSlot, false, true, firstDelGroup, firstDelSlot
+	}
+	return 0, 0, false, false, noIdx, noIdx
+}
+
+//go:nosplit
+//go:inline
+func computeHashParts(hash uint64) (uint64, uint8) {
+	return hash >> 7, uint8(hash & 0x7F)
+}
+
+//go:nosplit
+//go:inline
+func ctrlGroupMatchH2(group ctrlGroup, h2 uint8) bitset {
+	v := uint64(group) ^ (bitsetLSB * uint64(h2))
+	return bitset(((v - bitsetLSB) &^ v) & bitsetMSB)
+}
+
+//go:nosplit
+//go:inline
+func ctrlGroupMatchEmpty(g ctrlGroup) bitset {
+	v := uint64(g)
+	return bitset((v &^ (v << 6)) & bitsetMSB)
+}
+
+//go:nosplit
+//go:inline
+func ctrlGroupMatchEmptyOrDeleted(g ctrlGroup) bitset {
+	return bitset(uint64(g) & bitsetMSB)
+}
+
+//go:nosplit
+//go:inline
+func bitsetNextIndex(b bitset) uint64 {
+	return uint64(bits.TrailingZeros64(uint64(b))) >> 3
+}
+
+//go:nosplit
+//go:inline
+func updateCtrlByte(group ctrlGroup, slot uint64, c ctrl) ctrlGroup {
+	const byteMask = 0xFF
+	shift := slot * 8
+	mask := uint64(byteMask) << shift
+	return ctrlGroup((uint64(group) &^ mask) | (uint64(c) << shift))
 }
