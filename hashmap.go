@@ -47,7 +47,7 @@ type HashMap[TKey, TValue any] struct {
 	groupMask             uint64
 }
 
-// KeyComparer must return true if *a and *b represent the same key.
+// KeyComparer defines the contract when two keys are considered equal.
 type KeyComparer[TKey any] func(a, b *TKey) bool
 
 // KeyMarkRetriever must return the mark of the given key.
@@ -171,6 +171,69 @@ func HashMapItemAddUnsafe[TKey, TValue any](instance memcore.MarkRaw, key TKey, 
 	*ctrlPtr = updateCtrlByte(*ctrlPtr, slot, ctrl(h2))
 }
 
+// HashMapItemAddFast inserts or updates a key–value pair.
+func HashMapItemAddFast[TKey, TValue any](
+	instance memcore.MarkRaw,
+	key TKey, value TValue,
+	keyCmp KeyComparer[TKey],
+	markRetriever KeyMarkRetriever[TKey],
+) {
+	h := memcore.MemcoreMarkDereferenceObjectUnsafe[HashMap[TKey, TValue]](instance)
+	keyMark := markRetriever(key)
+	keyPtr := memcore.MemcoreMarkDereferenceObjectUnsafe[TKey](keyMark)
+	keyHash := hash.XXH3HasherHash64View[TKey](hasher, keyMark)
+	h1, h2 := computeHashParts(keyHash)
+
+	groupIDX, slot, found, hasFree := hashMapProbeFast(h, h1, h2, keyPtr, true, keyCmp)
+	if found {
+		ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot).value = value
+		return
+	}
+	if !hasFree {
+		panic("HashMapItemAdd: no space left")
+	}
+
+	pair := ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot)
+	pair.value = value
+	pair.keyMark = keyMark
+	pair.keyUnsafe = uintptr(unsafe.Pointer(keyPtr))
+	ctrlPtr := ArrayItemPtrGetAtUnsafe[ctrlGroup](h.metaData, groupIDX)
+	*ctrlPtr = updateCtrlByte(*ctrlPtr, slot, ctrl(h2))
+}
+
+// HashMapItemAddFastUnsafe inserts or updates a key–value pair.
+// This variant assumes all keys inside the map are still accessible in their original memory address.
+// This is therefore only "safe" when you can guarantee the underlying memory has not relocated.
+// It is a bit faster.
+func HashMapItemAddFastUnsafe[TKey, TValue any](
+	instance memcore.MarkRaw,
+	key TKey, value TValue,
+	keyCmp KeyComparer[TKey],
+	markRetriever KeyMarkRetriever[TKey],
+) {
+	h := memcore.MemcoreMarkDereferenceObjectUnsafe[HashMap[TKey, TValue]](instance)
+	keyMark := markRetriever(key)
+	keyPtr := memcore.MemcoreMarkDereferenceObjectUnsafe[TKey](keyMark)
+	keyHash := hash.XXH3HasherHash64View[TKey](hasher, keyMark)
+	h1, h2 := computeHashParts(keyHash)
+
+	groupIDX, slot, found, hasFree := hashMapProbeFastUnsafe(h, h1, h2, keyPtr, true, keyCmp)
+	if found {
+		ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot).value = value
+		return
+	}
+	if !hasFree {
+		panic("HashMapItemAdd: no space left")
+	}
+
+	pair := ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot)
+	pair.value = value
+	pair.keyMark = keyMark
+	pair.keyUnsafe = uintptr(unsafe.Pointer(keyPtr))
+	ctrlPtr := ArrayItemPtrGetAtUnsafe[ctrlGroup](h.metaData, groupIDX)
+	*ctrlPtr = updateCtrlByte(*ctrlPtr, slot, ctrl(h2))
+}
+
 // HashMapItemGet retrieves the value for a key.
 func HashMapItemGet[TKey, TValue any](instance memcore.MarkRaw, key TKey) (TValue, error) {
 	h := memcore.MemcoreMarkDereferenceObjectUnsafe[HashMap[TKey, TValue]](instance)
@@ -183,6 +246,29 @@ func HashMapItemGet[TKey, TValue any](instance memcore.MarkRaw, key TKey) (TValu
 	h1, h2 := computeHashParts(keyHash)
 
 	groupIDX, slot, found, _ := hashMapProbe(h, h1, h2, keyPtr, false)
+	if !found {
+		var zero TValue
+		return zero, fmt.Errorf("key not found")
+	}
+	return ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot).value, nil
+}
+
+// HashMapItemGetFast retrieves the value for a key.
+func HashMapItemGetFast[TKey, TValue any](
+	instance memcore.MarkRaw,
+	key TKey,
+	keyCmp KeyComparer[TKey],
+	markRetriever KeyMarkRetriever[TKey],
+) (TValue, error) {
+	h := memcore.MemcoreMarkDereferenceObjectUnsafe[HashMap[TKey, TValue]](instance)
+
+	keyMark := markRetriever(key)
+	keyPtr := memcore.MemcoreMarkDereferenceObjectUnsafe[TKey](keyMark)
+
+	keyHash := hash.XXH3HasherHash64View[TKey](hasher, keyMark)
+	h1, h2 := computeHashParts(keyHash)
+
+	groupIDX, slot, found, _ := hashMapProbeFast(h, h1, h2, keyPtr, false, keyCmp)
 	if !found {
 		var zero TValue
 		return zero, fmt.Errorf("key not found")
@@ -212,6 +298,32 @@ func HashMapItemGetUnsafe[TKey, TValue any](instance memcore.MarkRaw, key TKey) 
 	return ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot).value, nil
 }
 
+// HashMapItemGetFastUnsafe retrieves the value for a key.
+// This variant assumes all keys inside the map are still accessible in their original memory address.
+// This is therefore only "safe" when you can guarantee the underlying memory has not relocated.
+// It is a bit faster.
+func HashMapItemGetFastUnsafe[TKey, TValue any](
+	instance memcore.MarkRaw,
+	key TKey,
+	keyCmp KeyComparer[TKey],
+	markRetriever KeyMarkRetriever[TKey],
+) (TValue, error) {
+	h := memcore.MemcoreMarkDereferenceObjectUnsafe[HashMap[TKey, TValue]](instance)
+
+	keyMark := markRetriever(key)
+	keyPtr := memcore.MemcoreMarkDereferenceObjectUnsafe[TKey](keyMark)
+
+	keyHash := hash.XXH3HasherHash64View[TKey](hasher, keyMark)
+	h1, h2 := computeHashParts(keyHash)
+
+	groupIDX, slot, found, _ := hashMapProbeFastUnsafe(h, h1, h2, keyPtr, false, keyCmp)
+	if !found {
+		var zero TValue
+		return zero, fmt.Errorf("key not found")
+	}
+	return ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot).value, nil
+}
+
 // HashMapItemPtrGet returns a pointer to a value (not safe to persist).
 func HashMapItemPtrGet[TKey, TValue any](instance memcore.MarkRaw, key TKey) (*TValue, error) {
 	h := memcore.MemcoreMarkDereferenceObjectUnsafe[HashMap[TKey, TValue]](instance)
@@ -224,6 +336,29 @@ func HashMapItemPtrGet[TKey, TValue any](instance memcore.MarkRaw, key TKey) (*T
 	h1, h2 := computeHashParts(keyHash)
 
 	groupIDX, slot, found, _ := hashMapProbe(h, h1, h2, keyPtr, false)
+	if !found {
+		return nil, fmt.Errorf("key not found")
+	}
+	pair := ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot)
+	return &pair.value, nil
+}
+
+// HashMapItemPtrGetFast returns a pointer to a value (not safe to persist).
+func HashMapItemPtrGetFast[TKey, TValue any](
+	instance memcore.MarkRaw,
+	key TKey,
+	keyCmp KeyComparer[TKey],
+	markRetriever KeyMarkRetriever[TKey],
+) (*TValue, error) {
+	h := memcore.MemcoreMarkDereferenceObjectUnsafe[HashMap[TKey, TValue]](instance)
+
+	keyMark := markRetriever(key)
+	keyPtr := memcore.MemcoreMarkDereferenceObjectUnsafe[TKey](keyMark)
+
+	keyHash := hash.XXH3HasherHash64View[TKey](hasher, keyMark)
+	h1, h2 := computeHashParts(keyHash)
+
+	groupIDX, slot, found, _ := hashMapProbeFast(h, h1, h2, keyPtr, false, keyCmp)
 	if !found {
 		return nil, fmt.Errorf("key not found")
 	}
@@ -252,6 +387,31 @@ func HashMapItemPtrGetUnsafe[TKey, TValue any](instance memcore.MarkRaw, key TKe
 	return &ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot).value, nil
 }
 
+// HashMapItemPtrGetFastUnsafe retrieves the pointer of the value for a key.
+// This variant assumes all keys inside the map are still accessible in their original memory address.
+// This is therefore only "safe" when you can guarantee the underlying memory has not relocated.
+// It is a bit faster.
+func HashMapItemPtrGetFastUnsafe[TKey, TValue any](
+	instance memcore.MarkRaw,
+	key TKey,
+	keyCmp KeyComparer[TKey],
+	markRetriever KeyMarkRetriever[TKey],
+) (*TValue, error) {
+	h := memcore.MemcoreMarkDereferenceObjectUnsafe[HashMap[TKey, TValue]](instance)
+
+	keyMark := markRetriever(key)
+	keyPtr := memcore.MemcoreMarkDereferenceObjectUnsafe[TKey](keyMark)
+
+	keyHash := hash.XXH3HasherHash64View[TKey](hasher, keyMark)
+	h1, h2 := computeHashParts(keyHash)
+
+	groupIDX, slot, found, _ := hashMapProbeFastUnsafe(h, h1, h2, keyPtr, false, keyCmp)
+	if !found {
+		return nil, fmt.Errorf("key not found")
+	}
+	return &ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot).value, nil
+}
+
 // HashMapItemDelete marks an entry as deleted.
 func HashMapItemDelete[TKey, TValue any](instance memcore.MarkRaw, key TKey) {
 	h := memcore.MemcoreMarkDereferenceObjectUnsafe[HashMap[TKey, TValue]](instance)
@@ -264,6 +424,30 @@ func HashMapItemDelete[TKey, TValue any](instance memcore.MarkRaw, key TKey) {
 	h1, h2 := computeHashParts(keyHash)
 
 	groupIDX, slot, found, _ := hashMapProbe(h, h1, h2, keyPtr, false)
+	if !found {
+		return
+	}
+
+	ctrlPtr := ArrayItemPtrGetAtUnsafe[ctrlGroup](h.metaData, groupIDX)
+	*ctrlPtr = updateCtrlByte(*ctrlPtr, slot, ctrlDeleted)
+}
+
+// HashMapItemDeleteFast marks an entry as deleted.
+func HashMapItemDeleteFast[TKey, TValue any](
+	instance memcore.MarkRaw,
+	key TKey,
+	keyCmp KeyComparer[TKey],
+	markRetriever KeyMarkRetriever[TKey],
+) {
+	h := memcore.MemcoreMarkDereferenceObjectUnsafe[HashMap[TKey, TValue]](instance)
+
+	keyMark := markRetriever(key)
+	keyPtr := memcore.MemcoreMarkDereferenceObjectUnsafe[TKey](keyMark)
+
+	keyHash := hash.XXH3HasherHash64View[TKey](hasher, keyMark)
+	h1, h2 := computeHashParts(keyHash)
+
+	groupIDX, slot, found, _ := hashMapProbeFast(h, h1, h2, keyPtr, false, keyCmp)
 	if !found {
 		return
 	}
@@ -287,6 +471,33 @@ func HashMapItemDeleteUnsafe[TKey, TValue any](instance memcore.MarkRaw, key TKe
 	h1, h2 := computeHashParts(keyHash)
 
 	groupIDX, slot, found, _ := hashMapProbeUnsafe(h, h1, h2, keyPtr, false)
+	if !found {
+		return
+	}
+
+	ctrlPtr := ArrayItemPtrGetAtUnsafe[ctrlGroup](h.metaData, groupIDX)
+	*ctrlPtr = updateCtrlByte(*ctrlPtr, slot, ctrlDeleted)
+}
+
+// HashMapItemDeleteFastUnsafe marks an entry as deleted.
+// This variant assumes all keys inside the map are still accessible in their original memory address.
+// This is therefore only "safe" when you can guarantee the underlying memory has not relocated.
+// It is a bit faster.
+func HashMapItemDeleteFastUnsafe[TKey, TValue any](
+	instance memcore.MarkRaw,
+	key TKey,
+	keyCmp KeyComparer[TKey],
+	markRetriever KeyMarkRetriever[TKey],
+) {
+	h := memcore.MemcoreMarkDereferenceObjectUnsafe[HashMap[TKey, TValue]](instance)
+
+	keyMark := markRetriever(key)
+	keyPtr := memcore.MemcoreMarkDereferenceObjectUnsafe[TKey](keyMark)
+
+	keyHash := hash.XXH3HasherHash64View[TKey](hasher, keyMark)
+	h1, h2 := computeHashParts(keyHash)
+
+	groupIDX, slot, found, _ := hashMapProbeFastUnsafe(h, h1, h2, keyPtr, false, keyCmp)
 	if !found {
 		return
 	}
@@ -376,6 +587,61 @@ func hashMapProbe[TKey, TValue any](
 }
 
 //go:nosplit
+func hashMapProbeFast[TKey, TValue any](
+	h *HashMap[TKey, TValue],
+	h1 uint64, h2 uint8, key *TKey,
+	forInsert bool,
+	keyCmp KeyComparer[TKey],
+) (groupIDX, slot uint64, found, hasFree bool) {
+	const noIdx = ^uint64(0)
+	groupIDX = h1 & h.groupMask
+	availGroup, availSlot := noIdx, noIdx
+
+	dataCursor := ArrayCursorCreate[KeyValuePair[TKey, TValue]](h.data)
+	metadataCursor := ArrayCursorCreate[ctrlGroup](h.metaData)
+
+	for probe := uint64(0); probe < h.logicalBins; probe++ {
+		ctrl := *metadataCursor.PtrAt(groupIDX)
+
+		// 1. Match possible h2 candidates
+		match := ctrlGroupMatchH2(ctrl, h2)
+		for match != 0 {
+			s := bitsetNextIndex(match)
+			match &= match - 1
+			pair := dataCursor.PtrAt(groupIDX*8 + s)
+			pairKey := memcore.MemcoreMarkDereferenceObjectUnsafe[TKey](pair.keyMark) // 1.
+			if keyCmp(pairKey, key) {                                                 // 2.
+				return groupIDX, s, true, false
+			}
+		}
+
+		// 2. Check available (empty or deleted)
+		available := ctrlGroupMatchEmptyOrDeleted(ctrl)
+		if available != 0 && availGroup == noIdx {
+			empty := ctrlGroupMatchEmpty(ctrl)
+			deleted := available &^ empty
+			if deleted != 0 {
+				availSlot = bitsetNextIndex(deleted)
+			} else {
+				availSlot = bitsetNextIndex(available)
+			}
+			availGroup = groupIDX
+		}
+
+		// 3. Determine if we should stop based on mode
+		empty := ctrlGroupMatchEmpty(ctrl)
+		if (forInsert && available != 0) || (!forInsert && empty != 0) {
+			break
+		}
+		groupIDX = (groupIDX + 1) & h.groupMask
+	}
+	if availGroup != noIdx {
+		return availGroup, availSlot, false, true
+	}
+	return 0, 0, false, false
+}
+
+//go:nosplit
 func hashMapProbeUnsafe[TKey, TValue any](
 	h *HashMap[TKey, TValue],
 	h1 uint64, h2 uint8, key *TKey,
@@ -385,6 +651,61 @@ func hashMapProbeUnsafe[TKey, TValue any](
 	groupIDX = h1 & h.groupMask
 	availGroup, availSlot := noIdx, noIdx
 	keyCmp := memcore.MemcoreFunctionRetrieveTyped[KeyComparer[TKey]](h.keyComparerID) // 3.
+
+	dataCursor := ArrayCursorCreate[KeyValuePair[TKey, TValue]](h.data)
+	metadataCursor := ArrayCursorCreate[ctrlGroup](h.metaData)
+
+	for probe := uint64(0); probe < h.logicalBins; probe++ {
+		ctrl := *metadataCursor.PtrAt(groupIDX)
+
+		// 1. Match possible h2 candidates
+		match := ctrlGroupMatchH2(ctrl, h2)
+		for match != 0 {
+			s := bitsetNextIndex(match)
+			match &= match - 1
+			pair := dataCursor.PtrAt(groupIDX*8 + s)
+			pairKey := (*TKey)(unsafe.Pointer(pair.keyUnsafe))
+			if keyCmp(pairKey, key) { // 2.
+				return groupIDX, s, true, false
+			}
+		}
+
+		// 2. Check available (empty or deleted)
+		available := ctrlGroupMatchEmptyOrDeleted(ctrl)
+		if available != 0 && availGroup == noIdx {
+			empty := ctrlGroupMatchEmpty(ctrl)
+			deleted := available &^ empty
+			if deleted != 0 {
+				availSlot = bitsetNextIndex(deleted)
+			} else {
+				availSlot = bitsetNextIndex(available)
+			}
+			availGroup = groupIDX
+		}
+
+		// 3. Determine if we should stop based on mode
+		empty := ctrlGroupMatchEmpty(ctrl)
+		if (forInsert && available != 0) || (!forInsert && empty != 0) {
+			break
+		}
+		groupIDX = (groupIDX + 1) & h.groupMask
+	}
+	if availGroup != noIdx {
+		return availGroup, availSlot, false, true
+	}
+	return 0, 0, false, false
+}
+
+//go:nosplit
+func hashMapProbeFastUnsafe[TKey, TValue any](
+	h *HashMap[TKey, TValue],
+	h1 uint64, h2 uint8, key *TKey,
+	forInsert bool,
+	keyCmp KeyComparer[TKey],
+) (groupIDX, slot uint64, found, hasFree bool) {
+	const noIdx = ^uint64(0)
+	groupIDX = h1 & h.groupMask
+	availGroup, availSlot := noIdx, noIdx
 
 	dataCursor := ArrayCursorCreate[KeyValuePair[TKey, TValue]](h.data)
 	metadataCursor := ArrayCursorCreate[ctrlGroup](h.metaData)
