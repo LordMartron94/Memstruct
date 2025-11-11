@@ -258,6 +258,7 @@ func hashMapProbe[TKey, TValue any](
 	firstEmptyGroup, firstEmptySlot, firstDelGroup, firstDelSlot := noIdx, noIdx, noIdx, noIdx
 
 	keyCmp := memcore.MemcoreFunctionRetrieveTyped[KeyComparer[TKey]](h.keyComparerID)
+	arrayCursor := ArrayCursorCreate[KeyValuePair[TKey, TValue]](h.data)
 
 	for probe := uint64(0); probe < h.logicalBins; probe++ {
 		ctrl := ArrayItemGetAtUnsafe[ctrlGroup](h.metaData, groupIDX)
@@ -267,7 +268,7 @@ func hashMapProbe[TKey, TValue any](
 		for match != 0 {
 			s := bitsetNextIndex(match)
 			match &= match - 1
-			pair := ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+s)
+			pair := arrayCursor.PtrAt(groupIDX*8 + s)
 			if pair.active != 0 {
 				pairKey := memcore.MemcoreMarkDereferenceObjectUnsafe[TKey](pair.keyMark)
 				if keyCmp(pairKey, key) {
