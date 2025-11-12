@@ -611,6 +611,7 @@ func HashMapClearAndZero[TKey, TValue any](instance memcore.MarkRaw) {
 
 type hashMapPairKeyAccessor[TKey, TValue any] func(kvp *KeyValuePair[TKey, TValue]) *TKey
 
+//go:inline
 //go:nosplit
 func hashMapProbe[TKey, TValue any](
 	h *HashMap[TKey, TValue],
@@ -620,47 +621,82 @@ func hashMapProbe[TKey, TValue any](
 	keyCmp KeyComparer[TKey],
 ) (groupIDX, slot uint64, found, hasFree bool) {
 	const noIdx = ^uint64(0)
-	groupIDX = h1 & h.groupMask
+
+	mask := h.groupMask
+	groupStart := h1 & mask
 	availGroup, availSlot := noIdx, noIdx
 
-	dataCursor := ArrayCursorCreate[KeyValuePair[TKey, TValue]](h.data)
-	metadataCursor := ArrayCursorCreate[ctrlGroup](h.metaData)
+	dataCur := ArrayCursorCreate[KeyValuePair[TKey, TValue]](h.data)
+	metaCur := ArrayCursorCreate[ctrlGroup](h.metaData)
 
-	for probe := uint64(0); probe < h.logicalBins; probe++ {
-		ctrl := *metadataCursor.PtrAt(groupIDX)
+	// Align start down to a block of 4 groups
+	base := groupStart &^ 3
 
-		// 1. Match possible h2 candidates
-		match := ctrlGroupMatchH2(ctrl, h2)
-		for match != 0 {
-			s := bitsetNextIndex(match)
-			match &= match - 1
-			pair := dataCursor.PtrAt(groupIDX*8 + s)
-			pairKey := pairKeyAccessor(pair) // 1.
-			if keyCmp(pairKey, key) {        // 2.
-				return groupIDX, s, true, false
+	for probed := uint64(0); probed < h.logicalBins; {
+		remain := h.logicalBins - probed
+		n := uint64(4)
+		if remain < 4 {
+			n = remain
+		}
+
+		// Prefetch up to 4 groups
+		var ctrl [4]ctrlGroup
+		for i := uint64(0); i < n; i++ {
+			g := (base + i) & mask
+			ctrl[i] = *metaCur.PtrAt(g)
+		}
+
+		// 1) Match candidates in order (base, base+1, base+2, base+3)
+		for i := uint64(0); i < n; i++ {
+			g := (base + i) & mask
+			m := ctrlGroupMatchH2(ctrl[i], h2)
+			for m != 0 {
+				s := bitsetNextIndex(m)
+				m &= m - 1
+
+				pair := dataCur.PtrAt(g*8 + s)
+				pairKey := pairKeyAccessor(pair)
+				if keyCmp(pairKey, key) {
+					return g, s, true, false
+				}
 			}
 		}
 
-		// 2. Check available (empty or deleted)
-		available := ctrlGroupMatchEmptyOrDeleted(ctrl)
-		if available != 0 && availGroup == noIdx {
-			empty := ctrlGroupMatchEmpty(ctrl)
-			deleted := available &^ empty
-			if deleted != 0 {
-				availSlot = bitsetNextIndex(deleted)
-			} else {
-				availSlot = bitsetNextIndex(available)
+		// 2) Track first available (empty or deleted) if we don't have one yet
+		if availGroup == noIdx {
+			for i := uint64(0); i < n; i++ {
+				available := ctrlGroupMatchEmptyOrDeleted(ctrl[i])
+				if available != 0 {
+					empty := ctrlGroupMatchEmpty(ctrl[i])
+					var s uint64
+					if deleted := available &^ empty; deleted != 0 {
+						s = bitsetNextIndex(deleted)
+					} else {
+						s = bitsetNextIndex(available)
+					}
+					availGroup, availSlot = (base+i)&mask, s
+					break
+				}
 			}
-			availGroup = groupIDX
 		}
 
-		// 3. Determine if we should stop based on mode
-		empty := ctrlGroupMatchEmpty(ctrl)
-		if (forInsert && available != 0) || (!forInsert && empty != 0) {
+		stop := false
+		for i := uint64(0); i < n; i++ {
+			empty := ctrlGroupMatchEmpty(ctrl[i])
+			if (!forInsert && empty != 0) || (forInsert && (ctrlGroupMatchEmptyOrDeleted(ctrl[i]) != 0)) {
+				stop = true
+				break
+			}
+		}
+
+		probed += n
+		if stop {
 			break
 		}
-		groupIDX = (groupIDX + 1) & h.groupMask
+
+		base = (base + 4) & mask
 	}
+
 	if availGroup != noIdx {
 		return availGroup, availSlot, false, true
 	}
