@@ -125,7 +125,12 @@ func HashMapItemAdd[TKey, TValue any](instance memcore.MarkRaw, key TKey, value 
 	keyHash := hash.XXH3HasherHash64View[TKey](hasher, keyMark)
 	h1, h2 := computeHashParts(keyHash)
 
-	groupIDX, slot, found, hasFree := hashMapProbe(h, h1, h2, keyPtr, true)
+	groupIDX, slot, found, hasFree := hashMapProbe(h, h1, h2, keyPtr, true,
+		func(kvp *KeyValuePair[TKey, TValue]) *TKey {
+			return memcore.MemcoreMarkDereferenceObjectUnsafe[TKey](kvp.keyMark)
+		},
+		memcore.MemcoreFunctionRetrieveTyped[KeyComparer[TKey]](h.keyComparerID),
+	)
 	if found {
 		ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot).value = value
 		return
@@ -154,7 +159,12 @@ func HashMapItemAddUnsafe[TKey, TValue any](instance memcore.MarkRaw, key TKey, 
 	keyHash := hash.XXH3HasherHash64View[TKey](hasher, keyMark)
 	h1, h2 := computeHashParts(keyHash)
 
-	groupIDX, slot, found, hasFree := hashMapProbeUnsafe(h, h1, h2, keyPtr, true)
+	groupIDX, slot, found, hasFree := hashMapProbe(h, h1, h2, keyPtr, true,
+		func(kvp *KeyValuePair[TKey, TValue]) *TKey {
+			return (*TKey)(unsafe.Pointer(kvp.keyUnsafe))
+		},
+		memcore.MemcoreFunctionRetrieveTyped[KeyComparer[TKey]](h.keyComparerID),
+	)
 	if found {
 		ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot).value = value
 		return
@@ -184,7 +194,11 @@ func HashMapItemAddFast[TKey, TValue any](
 	keyHash := hash.XXH3HasherHash64View[TKey](hasher, keyMark)
 	h1, h2 := computeHashParts(keyHash)
 
-	groupIDX, slot, found, hasFree := hashMapProbeFast(h, h1, h2, keyPtr, true, keyCmp)
+	groupIDX, slot, found, hasFree := hashMapProbe(h, h1, h2, keyPtr, true,
+		func(kvp *KeyValuePair[TKey, TValue]) *TKey {
+			return memcore.MemcoreMarkDereferenceObjectUnsafe[TKey](kvp.keyMark)
+		},
+		keyCmp)
 	if found {
 		ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot).value = value
 		return
@@ -217,7 +231,11 @@ func HashMapItemAddFastUnsafe[TKey, TValue any](
 	keyHash := hash.XXH3HasherHash64View[TKey](hasher, keyMark)
 	h1, h2 := computeHashParts(keyHash)
 
-	groupIDX, slot, found, hasFree := hashMapProbeFastUnsafe(h, h1, h2, keyPtr, true, keyCmp)
+	groupIDX, slot, found, hasFree := hashMapProbe(h, h1, h2, keyPtr, true,
+		func(kvp *KeyValuePair[TKey, TValue]) *TKey {
+			return (*TKey)(unsafe.Pointer(kvp.keyUnsafe))
+		},
+		keyCmp)
 	if found {
 		ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot).value = value
 		return
@@ -245,7 +263,12 @@ func HashMapItemGet[TKey, TValue any](instance memcore.MarkRaw, key TKey) (TValu
 	keyHash := hash.XXH3HasherHash64View[TKey](hasher, keyMark)
 	h1, h2 := computeHashParts(keyHash)
 
-	groupIDX, slot, found, _ := hashMapProbe(h, h1, h2, keyPtr, false)
+	groupIDX, slot, found, _ := hashMapProbe(h, h1, h2, keyPtr, true,
+		func(kvp *KeyValuePair[TKey, TValue]) *TKey {
+			return memcore.MemcoreMarkDereferenceObject[TKey](kvp.keyMark)
+		},
+		memcore.MemcoreFunctionRetrieveTyped[KeyComparer[TKey]](h.keyComparerID),
+	)
 	if !found {
 		var zero TValue
 		return zero, fmt.Errorf("key not found")
@@ -268,7 +291,12 @@ func HashMapItemGetFast[TKey, TValue any](
 	keyHash := hash.XXH3HasherHash64View[TKey](hasher, keyMark)
 	h1, h2 := computeHashParts(keyHash)
 
-	groupIDX, slot, found, _ := hashMapProbeFast(h, h1, h2, keyPtr, false, keyCmp)
+	groupIDX, slot, found, _ := hashMapProbe(h, h1, h2, keyPtr, true,
+		func(kvp *KeyValuePair[TKey, TValue]) *TKey {
+			return memcore.MemcoreMarkDereferenceObject[TKey](kvp.keyMark)
+		},
+		keyCmp,
+	)
 	if !found {
 		var zero TValue
 		return zero, fmt.Errorf("key not found")
@@ -290,7 +318,12 @@ func HashMapItemGetUnsafe[TKey, TValue any](instance memcore.MarkRaw, key TKey) 
 	keyHash := hash.XXH3HasherHash64View[TKey](hasher, keyMark)
 	h1, h2 := computeHashParts(keyHash)
 
-	groupIDX, slot, found, _ := hashMapProbeUnsafe(h, h1, h2, keyPtr, false)
+	groupIDX, slot, found, _ := hashMapProbe(h, h1, h2, keyPtr, true,
+		func(kvp *KeyValuePair[TKey, TValue]) *TKey {
+			return (*TKey)(unsafe.Pointer(kvp.keyUnsafe))
+		},
+		memcore.MemcoreFunctionRetrieveTyped[KeyComparer[TKey]](h.keyComparerID),
+	)
 	if !found {
 		var zero TValue
 		return zero, fmt.Errorf("key not found")
@@ -316,7 +349,12 @@ func HashMapItemGetFastUnsafe[TKey, TValue any](
 	keyHash := hash.XXH3HasherHash64View[TKey](hasher, keyMark)
 	h1, h2 := computeHashParts(keyHash)
 
-	groupIDX, slot, found, _ := hashMapProbeFastUnsafe(h, h1, h2, keyPtr, false, keyCmp)
+	groupIDX, slot, found, _ := hashMapProbe(h, h1, h2, keyPtr, true,
+		func(kvp *KeyValuePair[TKey, TValue]) *TKey {
+			return (*TKey)(unsafe.Pointer(kvp.keyUnsafe))
+		},
+		keyCmp,
+	)
 	if !found {
 		var zero TValue
 		return zero, fmt.Errorf("key not found")
@@ -335,7 +373,12 @@ func HashMapItemPtrGet[TKey, TValue any](instance memcore.MarkRaw, key TKey) (*T
 	keyHash := hash.XXH3HasherHash64View[TKey](hasher, keyMark)
 	h1, h2 := computeHashParts(keyHash)
 
-	groupIDX, slot, found, _ := hashMapProbe(h, h1, h2, keyPtr, false)
+	groupIDX, slot, found, _ := hashMapProbe(h, h1, h2, keyPtr, true,
+		func(kvp *KeyValuePair[TKey, TValue]) *TKey {
+			return memcore.MemcoreMarkDereferenceObject[TKey](kvp.keyMark)
+		},
+		memcore.MemcoreFunctionRetrieveTyped[KeyComparer[TKey]](h.keyComparerID),
+	)
 	if !found {
 		return nil, fmt.Errorf("key not found")
 	}
@@ -358,7 +401,12 @@ func HashMapItemPtrGetFast[TKey, TValue any](
 	keyHash := hash.XXH3HasherHash64View[TKey](hasher, keyMark)
 	h1, h2 := computeHashParts(keyHash)
 
-	groupIDX, slot, found, _ := hashMapProbeFast(h, h1, h2, keyPtr, false, keyCmp)
+	groupIDX, slot, found, _ := hashMapProbe(h, h1, h2, keyPtr, true,
+		func(kvp *KeyValuePair[TKey, TValue]) *TKey {
+			return memcore.MemcoreMarkDereferenceObject[TKey](kvp.keyMark)
+		},
+		keyCmp,
+	)
 	if !found {
 		return nil, fmt.Errorf("key not found")
 	}
@@ -380,7 +428,12 @@ func HashMapItemPtrGetUnsafe[TKey, TValue any](instance memcore.MarkRaw, key TKe
 	keyHash := hash.XXH3HasherHash64View[TKey](hasher, keyMark)
 	h1, h2 := computeHashParts(keyHash)
 
-	groupIDX, slot, found, _ := hashMapProbeUnsafe(h, h1, h2, keyPtr, false)
+	groupIDX, slot, found, _ := hashMapProbe(h, h1, h2, keyPtr, true,
+		func(kvp *KeyValuePair[TKey, TValue]) *TKey {
+			return (*TKey)(unsafe.Pointer(kvp.keyUnsafe))
+		},
+		memcore.MemcoreFunctionRetrieveTyped[KeyComparer[TKey]](h.keyComparerID),
+	)
 	if !found {
 		return nil, fmt.Errorf("key not found")
 	}
@@ -405,7 +458,12 @@ func HashMapItemPtrGetFastUnsafe[TKey, TValue any](
 	keyHash := hash.XXH3HasherHash64View[TKey](hasher, keyMark)
 	h1, h2 := computeHashParts(keyHash)
 
-	groupIDX, slot, found, _ := hashMapProbeFastUnsafe(h, h1, h2, keyPtr, false, keyCmp)
+	groupIDX, slot, found, _ := hashMapProbe(h, h1, h2, keyPtr, true,
+		func(kvp *KeyValuePair[TKey, TValue]) *TKey {
+			return (*TKey)(unsafe.Pointer(kvp.keyUnsafe))
+		},
+		keyCmp,
+	)
 	if !found {
 		return nil, fmt.Errorf("key not found")
 	}
@@ -423,7 +481,12 @@ func HashMapItemDelete[TKey, TValue any](instance memcore.MarkRaw, key TKey) {
 	keyHash := hash.XXH3HasherHash64View[TKey](hasher, keyMark)
 	h1, h2 := computeHashParts(keyHash)
 
-	groupIDX, slot, found, _ := hashMapProbe(h, h1, h2, keyPtr, false)
+	groupIDX, slot, found, _ := hashMapProbe(h, h1, h2, keyPtr, true,
+		func(kvp *KeyValuePair[TKey, TValue]) *TKey {
+			return memcore.MemcoreMarkDereferenceObject[TKey](kvp.keyMark)
+		},
+		memcore.MemcoreFunctionRetrieveTyped[KeyComparer[TKey]](h.keyComparerID),
+	)
 	if !found {
 		return
 	}
@@ -447,7 +510,12 @@ func HashMapItemDeleteFast[TKey, TValue any](
 	keyHash := hash.XXH3HasherHash64View[TKey](hasher, keyMark)
 	h1, h2 := computeHashParts(keyHash)
 
-	groupIDX, slot, found, _ := hashMapProbeFast(h, h1, h2, keyPtr, false, keyCmp)
+	groupIDX, slot, found, _ := hashMapProbe(h, h1, h2, keyPtr, true,
+		func(kvp *KeyValuePair[TKey, TValue]) *TKey {
+			return memcore.MemcoreMarkDereferenceObject[TKey](kvp.keyMark)
+		},
+		keyCmp,
+	)
 	if !found {
 		return
 	}
@@ -470,7 +538,12 @@ func HashMapItemDeleteUnsafe[TKey, TValue any](instance memcore.MarkRaw, key TKe
 	keyHash := hash.XXH3HasherHash64View[TKey](hasher, keyMark)
 	h1, h2 := computeHashParts(keyHash)
 
-	groupIDX, slot, found, _ := hashMapProbeUnsafe(h, h1, h2, keyPtr, false)
+	groupIDX, slot, found, _ := hashMapProbe(h, h1, h2, keyPtr, true,
+		func(kvp *KeyValuePair[TKey, TValue]) *TKey {
+			return (*TKey)(unsafe.Pointer(kvp.keyUnsafe))
+		},
+		memcore.MemcoreFunctionRetrieveTyped[KeyComparer[TKey]](h.keyComparerID),
+	)
 	if !found {
 		return
 	}
@@ -497,7 +570,12 @@ func HashMapItemDeleteFastUnsafe[TKey, TValue any](
 	keyHash := hash.XXH3HasherHash64View[TKey](hasher, keyMark)
 	h1, h2 := computeHashParts(keyHash)
 
-	groupIDX, slot, found, _ := hashMapProbeFastUnsafe(h, h1, h2, keyPtr, false, keyCmp)
+	groupIDX, slot, found, _ := hashMapProbe(h, h1, h2, keyPtr, true,
+		func(kvp *KeyValuePair[TKey, TValue]) *TKey {
+			return (*TKey)(unsafe.Pointer(kvp.keyUnsafe))
+		},
+		keyCmp,
+	)
 	if !found {
 		return
 	}
@@ -531,66 +609,14 @@ func HashMapClearAndZero[TKey, TValue any](instance memcore.MarkRaw) {
 // Private Helpers (inline hot-path operations)
 // ------------------------------------------------------------
 
+type hashMapPairKeyAccessor[TKey, TValue any] func(kvp *KeyValuePair[TKey, TValue]) *TKey
+
 //go:nosplit
 func hashMapProbe[TKey, TValue any](
 	h *HashMap[TKey, TValue],
 	h1 uint64, h2 uint8, key *TKey,
 	forInsert bool,
-) (groupIDX, slot uint64, found, hasFree bool) {
-	const noIdx = ^uint64(0)
-	groupIDX = h1 & h.groupMask
-	availGroup, availSlot := noIdx, noIdx
-	keyCmp := memcore.MemcoreFunctionRetrieveTyped[KeyComparer[TKey]](h.keyComparerID) // 3.
-
-	dataCursor := ArrayCursorCreate[KeyValuePair[TKey, TValue]](h.data)
-	metadataCursor := ArrayCursorCreate[ctrlGroup](h.metaData)
-
-	for probe := uint64(0); probe < h.logicalBins; probe++ {
-		ctrl := *metadataCursor.PtrAt(groupIDX)
-
-		// 1. Match possible h2 candidates
-		match := ctrlGroupMatchH2(ctrl, h2)
-		for match != 0 {
-			s := bitsetNextIndex(match)
-			match &= match - 1
-			pair := dataCursor.PtrAt(groupIDX*8 + s)
-			pairKey := memcore.MemcoreMarkDereferenceObjectUnsafe[TKey](pair.keyMark) // 1.
-			if keyCmp(pairKey, key) {                                                 // 2.
-				return groupIDX, s, true, false
-			}
-		}
-
-		// 2. Check available (empty or deleted)
-		available := ctrlGroupMatchEmptyOrDeleted(ctrl)
-		if available != 0 && availGroup == noIdx {
-			empty := ctrlGroupMatchEmpty(ctrl)
-			deleted := available &^ empty
-			if deleted != 0 {
-				availSlot = bitsetNextIndex(deleted)
-			} else {
-				availSlot = bitsetNextIndex(available)
-			}
-			availGroup = groupIDX
-		}
-
-		// 3. Determine if we should stop based on mode
-		empty := ctrlGroupMatchEmpty(ctrl)
-		if (forInsert && available != 0) || (!forInsert && empty != 0) {
-			break
-		}
-		groupIDX = (groupIDX + 1) & h.groupMask
-	}
-	if availGroup != noIdx {
-		return availGroup, availSlot, false, true
-	}
-	return 0, 0, false, false
-}
-
-//go:nosplit
-func hashMapProbeFast[TKey, TValue any](
-	h *HashMap[TKey, TValue],
-	h1 uint64, h2 uint8, key *TKey,
-	forInsert bool,
+	pairKeyAccessor hashMapPairKeyAccessor[TKey, TValue],
 	keyCmp KeyComparer[TKey],
 ) (groupIDX, slot uint64, found, hasFree bool) {
 	const noIdx = ^uint64(0)
@@ -609,118 +635,8 @@ func hashMapProbeFast[TKey, TValue any](
 			s := bitsetNextIndex(match)
 			match &= match - 1
 			pair := dataCursor.PtrAt(groupIDX*8 + s)
-			pairKey := memcore.MemcoreMarkDereferenceObjectUnsafe[TKey](pair.keyMark) // 1.
-			if keyCmp(pairKey, key) {                                                 // 2.
-				return groupIDX, s, true, false
-			}
-		}
-
-		// 2. Check available (empty or deleted)
-		available := ctrlGroupMatchEmptyOrDeleted(ctrl)
-		if available != 0 && availGroup == noIdx {
-			empty := ctrlGroupMatchEmpty(ctrl)
-			deleted := available &^ empty
-			if deleted != 0 {
-				availSlot = bitsetNextIndex(deleted)
-			} else {
-				availSlot = bitsetNextIndex(available)
-			}
-			availGroup = groupIDX
-		}
-
-		// 3. Determine if we should stop based on mode
-		empty := ctrlGroupMatchEmpty(ctrl)
-		if (forInsert && available != 0) || (!forInsert && empty != 0) {
-			break
-		}
-		groupIDX = (groupIDX + 1) & h.groupMask
-	}
-	if availGroup != noIdx {
-		return availGroup, availSlot, false, true
-	}
-	return 0, 0, false, false
-}
-
-//go:nosplit
-func hashMapProbeUnsafe[TKey, TValue any](
-	h *HashMap[TKey, TValue],
-	h1 uint64, h2 uint8, key *TKey,
-	forInsert bool,
-) (groupIDX, slot uint64, found, hasFree bool) {
-	const noIdx = ^uint64(0)
-	groupIDX = h1 & h.groupMask
-	availGroup, availSlot := noIdx, noIdx
-	keyCmp := memcore.MemcoreFunctionRetrieveTyped[KeyComparer[TKey]](h.keyComparerID) // 3.
-
-	dataCursor := ArrayCursorCreate[KeyValuePair[TKey, TValue]](h.data)
-	metadataCursor := ArrayCursorCreate[ctrlGroup](h.metaData)
-
-	for probe := uint64(0); probe < h.logicalBins; probe++ {
-		ctrl := *metadataCursor.PtrAt(groupIDX)
-
-		// 1. Match possible h2 candidates
-		match := ctrlGroupMatchH2(ctrl, h2)
-		for match != 0 {
-			s := bitsetNextIndex(match)
-			match &= match - 1
-			pair := dataCursor.PtrAt(groupIDX*8 + s)
-			pairKey := (*TKey)(unsafe.Pointer(pair.keyUnsafe))
-			if keyCmp(pairKey, key) { // 2.
-				return groupIDX, s, true, false
-			}
-		}
-
-		// 2. Check available (empty or deleted)
-		available := ctrlGroupMatchEmptyOrDeleted(ctrl)
-		if available != 0 && availGroup == noIdx {
-			empty := ctrlGroupMatchEmpty(ctrl)
-			deleted := available &^ empty
-			if deleted != 0 {
-				availSlot = bitsetNextIndex(deleted)
-			} else {
-				availSlot = bitsetNextIndex(available)
-			}
-			availGroup = groupIDX
-		}
-
-		// 3. Determine if we should stop based on mode
-		empty := ctrlGroupMatchEmpty(ctrl)
-		if (forInsert && available != 0) || (!forInsert && empty != 0) {
-			break
-		}
-		groupIDX = (groupIDX + 1) & h.groupMask
-	}
-	if availGroup != noIdx {
-		return availGroup, availSlot, false, true
-	}
-	return 0, 0, false, false
-}
-
-//go:nosplit
-func hashMapProbeFastUnsafe[TKey, TValue any](
-	h *HashMap[TKey, TValue],
-	h1 uint64, h2 uint8, key *TKey,
-	forInsert bool,
-	keyCmp KeyComparer[TKey],
-) (groupIDX, slot uint64, found, hasFree bool) {
-	const noIdx = ^uint64(0)
-	groupIDX = h1 & h.groupMask
-	availGroup, availSlot := noIdx, noIdx
-
-	dataCursor := ArrayCursorCreate[KeyValuePair[TKey, TValue]](h.data)
-	metadataCursor := ArrayCursorCreate[ctrlGroup](h.metaData)
-
-	for probe := uint64(0); probe < h.logicalBins; probe++ {
-		ctrl := *metadataCursor.PtrAt(groupIDX)
-
-		// 1. Match possible h2 candidates
-		match := ctrlGroupMatchH2(ctrl, h2)
-		for match != 0 {
-			s := bitsetNextIndex(match)
-			match &= match - 1
-			pair := dataCursor.PtrAt(groupIDX*8 + s)
-			pairKey := (*TKey)(unsafe.Pointer(pair.keyUnsafe))
-			if keyCmp(pairKey, key) { // 2.
+			pairKey := pairKeyAccessor(pair) // 1.
+			if keyCmp(pairKey, key) {        // 2.
 				return groupIDX, s, true, false
 			}
 		}
@@ -790,4 +706,12 @@ func updateCtrlByte(group ctrlGroup, slot uint64, c ctrl) ctrlGroup {
 	shift := slot * 8
 	mask := uint64(byteMask) << shift
 	return ctrlGroup((uint64(group) &^ mask) | (uint64(c) << shift))
+}
+
+//go:inline
+//go:nosplit
+func metaBytePtrAtGroup(meta memcore.MarkRaw, g, logicalBins uint64) *uint8 {
+	off := uintptr((g & (logicalBins - 1)) * 8)
+	p := memcore.MemcoreMarkOffsetFrom(meta, off)
+	return (*uint8)(memcore.MemcoreMarkDereferenceUnsafe(p))
 }
