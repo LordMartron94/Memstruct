@@ -605,6 +605,39 @@ func HashMapClearAndZero[TKey, TValue any](instance memcore.MarkRaw) {
 	ArrayClear[KeyValuePair[TKey, TValue]](h.data)
 }
 
+// HashMapForEach iterates over all active key–value pairs in the map.
+// The callback receives (*TKey, *TValue). Returning false stops iteration early.
+func HashMapForEach[TKey, TValue any](
+	instance memcore.MarkRaw,
+	fn func(key *TKey, value *TValue) bool,
+) {
+	h := memcore.MemcoreMarkDereferenceObjectUnsafe[HashMap[TKey, TValue]](instance)
+
+	dataCur := ArrayCursorCreate[KeyValuePair[TKey, TValue]](h.data)
+	metaCur := ArrayCursorCreate[ctrlGroup](h.metaData)
+
+	for g := uint64(0); g < h.logicalBins; g++ {
+		ctrl := *metaCur.PtrAt(g)
+		liveMask := ^ctrlGroupMatchEmptyOrDeleted(ctrl)
+
+		if liveMask == 0 {
+			continue
+		}
+
+		m := liveMask
+		for m != 0 {
+			s := bitsetNextIndex(m)
+			m &= m - 1
+
+			pair := dataCur.PtrAt(g*8 + s)
+			key := memcore.MemcoreMarkDereferenceObjectUnsafe[TKey](pair.keyMark)
+			if !fn(key, &pair.value) {
+				return
+			}
+		}
+	}
+}
+
 // ------------------------------------------------------------
 // Private Helpers (inline hot-path operations)
 // ------------------------------------------------------------
@@ -742,12 +775,4 @@ func updateCtrlByte(group ctrlGroup, slot uint64, c ctrl) ctrlGroup {
 	shift := slot * 8
 	mask := uint64(byteMask) << shift
 	return ctrlGroup((uint64(group) &^ mask) | (uint64(c) << shift))
-}
-
-//go:inline
-//go:nosplit
-func metaBytePtrAtGroup(meta memcore.MarkRaw, g, logicalBins uint64) *uint8 {
-	off := uintptr((g & (logicalBins - 1)) * 8)
-	p := memcore.MemcoreMarkOffsetFrom(meta, off)
-	return (*uint8)(memcore.MemcoreMarkDereferenceUnsafe(p))
 }
