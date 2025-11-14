@@ -638,6 +638,32 @@ func HashMapForEach[TKey, TValue any](
 	}
 }
 
+// HashMapKeys returns a slice containing all keys in the hashmap.
+// This is not guaranteed to be stable when stored.
+func HashMapKeys[TKey, TValue any](instance memcore.MarkRaw) []*TKey {
+	keys := make([]*TKey, 0)
+
+	HashMapForEach(instance, func(key *TKey, _ *TValue) bool {
+		keys = append(keys, key)
+		return true
+	})
+
+	return keys
+}
+
+// HashMapValues returns a slice containing all values in the hashmap.
+// This is not guaranteed to be stable when stored.
+func HashMapValues[TKey, TValue any](instance memcore.MarkRaw) []*TValue {
+	values := make([]*TValue, 0)
+
+	HashMapForEach(instance, func(_ *TKey, value *TValue) bool {
+		values = append(values, value)
+		return true
+	})
+
+	return values
+}
+
 // ------------------------------------------------------------
 // Private Helpers (inline hot-path operations)
 // ------------------------------------------------------------
