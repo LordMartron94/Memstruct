@@ -56,6 +56,12 @@ func VectorInitializeAt[T foundation.Numeric](vectorAddr memcore.MarkRaw, capaci
 	ArrayInitializeAt[T](vectorAddr, capacity)
 }
 
+// VectorInitializeFrom initializes a new vector at vectorAddr with the contents of src.
+// Capacity must be >= src capacity.
+func VectorInitializeFrom[T foundation.Numeric](vectorAddr memcore.MarkRaw, src memcore.MarkRaw, newCapacity uint64) error {
+	return VectorInitializeFrom[T](vectorAddr, src, newCapacity)
+}
+
 // VectorSnapshotCreate creates a deep copy of an vector at a new memory location
 // defined by the destination pointer (which points to the start of the new vector header).
 // It copies both the header and the data that follow it, maintaining the same relative layout.
@@ -74,6 +80,25 @@ func VectorSnapshotRestore[T foundation.Numeric](dest, src memcore.MarkRaw) erro
 // It will not move memory at all.
 func VectorHeaderClone[T foundation.Numeric](dest, src memcore.MarkRaw) {
 	ArrayHeaderClone[T](dest, src)
+}
+
+// VectorCopyFrom copies the entire contents of src vector into dest vector,
+// starting at destStartIdx. Both arrays must have the same element type T.
+// Capacity must allow the copy, else an error is returned.
+//
+// Example: copy src[0:srcCap] → dest[destStartIdx : destStartIdx+srcCap]
+func VectorCopyFrom[T foundation.Numeric](dest memcore.MarkRaw, src memcore.MarkRaw, destStartIdx uint64) error {
+	return ArrayCopyFrom[T](dest, src, destStartIdx)
+}
+
+// VectorCopyFromRange copies src[from:to) into dest starting at destStartIdx.
+// Bounds are checked; both arrays must have same type T.
+func VectorCopyFromRange[T foundation.Numeric](
+	dest memcore.MarkRaw,
+	src memcore.MarkRaw,
+	from, to, destStartIdx uint64,
+) error {
+	return ArrayCopyFromRange[T](dest, src, from, to, destStartIdx)
 }
 
 // VectorHeaderSizeBytesGet returns the required bytes for the Vector header.
