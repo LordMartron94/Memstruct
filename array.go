@@ -54,6 +54,13 @@ func ArrayInitializeAt[T any](arrayAddr memcore.MarkRaw, capacity uint64) {
 	)
 }
 
+// ArrayInitializeFrom initializes a new array at arrayAddr with the contents of src.
+// Capacity must be >= src capacity.
+func ArrayInitializeFrom[T any](arrayAddr memcore.MarkRaw, src memcore.MarkRaw, newCapacity uint64) error {
+	ArrayInitializeAt[T](arrayAddr, newCapacity)
+	return ArrayCopyFrom[T](arrayAddr, src, 0)
+}
+
 // ArraySnapshotCreate creates a deep copy of an array at a new memory location
 // defined by the destination pointer (which points to the start of the new array header).
 // It copies both the header and the data that follow it, maintaining the same relative layout.
@@ -101,6 +108,68 @@ func ArrayHeaderClone[T any](dest, src memcore.MarkRaw) {
 	srcHeader := memcore.MemcoreMarkDereferenceObjectUnsafe[Array[T]](src)
 
 	*dstHeader = *srcHeader
+}
+
+// ArrayCopyFrom copies the entire contents of src array into dest array,
+// starting at destStartIdx. Both arrays must have the same element type T.
+// Capacity must allow the copy, else an error is returned.
+//
+// Example: copy src[0:srcCap] → dest[destStartIdx : destStartIdx+srcCap]
+func ArrayCopyFrom[T any](dest memcore.MarkRaw, src memcore.MarkRaw, destStartIdx uint64) error {
+	destBase, destHeader := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[T]](dest)
+	srcBase, srcHeader := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[T]](src)
+
+	srcCap := srcHeader.capacity
+	destCap := destHeader.capacity
+
+	if destStartIdx+srcCap > destCap {
+		return fmt.Errorf(
+			"ArrayCopyFrom: insufficient capacity (destStart=%d, srcCap=%d, destCap=%d)",
+			destStartIdx, srcCap, destCap,
+		)
+	}
+
+	srcPtr := arrayComputeDataAddr(srcHeader, srcBase)
+	dstPtr := unsafe.Add(arrayComputeDataAddr(destHeader, destBase), uintptr(destStartIdx)*destHeader.itemSize)
+
+	totalBytes := uintptr(srcCap) * uintptr(srcHeader.itemSize)
+	memcore.MemoryMoveNoHeapPointers(dstPtr, srcPtr, totalBytes)
+
+	return nil
+}
+
+// ArrayCopyFromRange copies src[from:to) into dest starting at destStartIdx.
+// Bounds are checked; both arrays must have same type T.
+func ArrayCopyFromRange[T any](
+	dest memcore.MarkRaw,
+	src memcore.MarkRaw,
+	from, to, destStartIdx uint64,
+) error {
+	if from >= to {
+		return fmt.Errorf("ArrayCopyFromRange: from must be < to")
+	}
+
+	srcBase, srcHeader := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[T]](src)
+	destBase, destHeader := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[T]](dest)
+
+	srcCap := srcHeader.capacity
+	if to > srcCap {
+		return fmt.Errorf("ArrayCopyFromRange: 'to' exceeds src capacity")
+	}
+
+	count := to - from
+
+	if destStartIdx+count > destHeader.capacity {
+		return fmt.Errorf("ArrayCopyFromRange: insufficient dest capacity")
+	}
+
+	srcPtr := unsafe.Add(arrayComputeDataAddr(srcHeader, srcBase), uintptr(from)*srcHeader.itemSize)
+	dstPtr := unsafe.Add(arrayComputeDataAddr(destHeader, destBase), uintptr(destStartIdx)*destHeader.itemSize)
+
+	bytes := uintptr(count) * srcHeader.itemSize
+	memcore.MemoryMoveNoHeapPointers(dstPtr, srcPtr, bytes)
+
+	return nil
 }
 
 // ArrayHeaderSizeBytesGet returns the required bytes for the Array header.
