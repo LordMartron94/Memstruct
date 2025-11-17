@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"foundation"
 	"memcore"
+	"sort"
 	"strings"
 	"unsafe"
 )
@@ -455,6 +456,91 @@ func VectorClear[T foundation.Numeric](vector memcore.MarkRaw) {
 //go:inline
 func VectorIsIdxValid[T foundation.Numeric](vector memcore.MarkRaw, idx uint64) bool {
 	return ArrayIsIdxValid[T](vector, idx)
+}
+
+// VectorSort sorts the vector in-place.
+//
+// The comparison function should return:
+// a < b : -1 (or negative)
+// a == b : 0
+// a > b : 1 (or positive)
+func VectorSort[T foundation.Numeric](vector memcore.MarkRaw, cmp func(a, b T) int) {
+	base, inst := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Vector[T]](vector)
+
+	cap := inst.capacity
+	if cap <= 1 {
+		return
+	}
+
+	data := unsafe.Add(base, inst.dataAddrOffset)
+	elemSize := uintptr(inst.itemSize)
+
+	tmp := make([]T, cap)
+
+	for i := uint64(0); i < cap; i++ {
+		ptr := unsafe.Add(data, uintptr(i)*elemSize)
+		tmp[i] = *(*T)(ptr)
+	}
+
+	sort.Slice(tmp, func(i, j int) bool {
+		return cmp(tmp[i], tmp[j]) < 0
+	})
+
+	for i := uint64(0); i < cap; i++ {
+		ptr := unsafe.Add(data, uintptr(i)*elemSize)
+		*(*T)(ptr) = tmp[i]
+	}
+}
+
+// VectorSorted returns a sorted variant of this vector.
+//
+// The comparison function should return:
+// a < b : -1 (or negative)
+// a == b : 0
+// a > b : 1 (or positive)
+func VectorSorted[T foundation.Numeric](
+	vector memcore.MarkRaw,
+	targetVectorAddr memcore.MarkRaw,
+	cmp func(a, b T) int,
+) {
+	srcBase, srcInst := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Vector[T]](vector)
+	dstBase, dstInst := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Vector[T]](targetVectorAddr)
+
+	if srcInst.capacity != dstInst.capacity {
+		panic(fmt.Errorf(
+			"VectorSorted: capacity mismatch (src=%d, dst=%d)",
+			srcInst.capacity, dstInst.capacity,
+		))
+	}
+
+	cap := srcInst.capacity
+	if cap <= 1 {
+		srcData := unsafe.Add(srcBase, srcInst.dataAddrOffset)
+		dstData := unsafe.Add(dstBase, dstInst.dataAddrOffset)
+		total := uintptr(cap) * uintptr(srcInst.itemSize)
+		memcore.MemoryMoveNoHeapPointers(dstData, srcData, total)
+		return
+	}
+
+	srcData := unsafe.Add(srcBase, srcInst.dataAddrOffset)
+	elemSize := uintptr(srcInst.itemSize)
+
+	tmp := make([]T, cap)
+
+	for i := uint64(0); i < cap; i++ {
+		ptr := unsafe.Add(srcData, uintptr(i)*elemSize)
+		tmp[i] = *(*T)(ptr)
+	}
+
+	sort.Slice(tmp, func(i, j int) bool {
+		return cmp(tmp[i], tmp[j]) < 0
+	})
+
+	dstData := unsafe.Add(dstBase, dstInst.dataAddrOffset)
+	for i := uint64(0); i < cap; i++ {
+		ptr := unsafe.Add(dstData, uintptr(i)*elemSize)
+		*(*T)(ptr) = tmp[i]
+	}
 }
 
 // ---------------------------------------------------- VECTOR VIEW
