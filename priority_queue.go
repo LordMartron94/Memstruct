@@ -37,6 +37,96 @@ func PriorityQueueInitializeAt[T any](addr memcore.MarkRaw, capacityElements uin
 	}
 }
 
+// PriorityQueueInitializeFrom initializes a new priority queue at pqAddr using the contents of src.
+// NewCapacity must be >= src.length.
+func PriorityQueueInitializeFrom[T any](pqAddr memcore.MarkRaw, src memcore.MarkRaw, newCapacity uint64) error {
+	PriorityQueueInitializeAt[T](pqAddr, newCapacity)
+	return PriorityQueueCopyFrom[T](pqAddr, src)
+}
+
+// PriorityQueueCopyFrom copies the active elements from src into dest.
+// Dest capacity must be >= src length.
+// Dest length will be overwritten to match src length.
+func PriorityQueueCopyFrom[T any](dest memcore.MarkRaw, src memcore.MarkRaw) error {
+	destHeader := memcore.MemcoreMarkDereferenceObjectUnsafe[PriorityQueue[T]](dest)
+	srcHeader := memcore.MemcoreMarkDereferenceObjectUnsafe[PriorityQueue[T]](src)
+
+	// Check if destination can hold the active elements of source
+	if destHeader.capacity < srcHeader.length {
+		return fmt.Errorf(
+			"PriorityQueueCopyFrom: insufficient capacity (srcLen=%d, destCap=%d)",
+			srcHeader.length, destHeader.capacity,
+		)
+	}
+
+	// We only copy the active range [0, length).
+	// We use the Array primitives to handle the raw data movement.
+	err := ArrayCopyFromRange[T](
+		destHeader.data,  // Dest Array
+		srcHeader.data,   // Source Array
+		0,                // From (inclusive)
+		srcHeader.length, // To (exclusive)
+		0,                // Dest Start Index
+	)
+
+	if err != nil {
+		return err
+	}
+
+	// Synchronize the length in the header
+	destHeader.length = srcHeader.length
+
+	return nil
+}
+
+// PriorityQueueSnapshotCreate creates a deep copy of a priority queue at a new memory location.
+// It copies the PQ Header, the Array Header, and the Array Data in one block,
+// then repoints the internal pointers.
+func PriorityQueueSnapshotCreate[T any](dest memcore.MarkRaw, instance memcore.MarkRaw) memcore.MarkRaw {
+	srcHeader := memcore.MemcoreMarkDereferenceObjectUnsafe[PriorityQueue[T]](instance)
+
+	totalSize := PriorityQueueRequiredBytesGet[T](srcHeader.capacity)
+
+	srcAddr := memcore.MemcoreMarkDereference(instance)
+	dstAddr := memcore.MemcoreMarkDereference(dest)
+
+	memcore.MemoryMoveNoHeapPointers(dstAddr, srcAddr, uintptr(totalSize))
+
+	dstHeader := memcore.MemcoreMarkDereferenceObjectUnsafe[PriorityQueue[T]](dest)
+	offsetData := uintptr(memcore.SizeOf[PriorityQueue[T]]())
+
+	dstHeader.data = memcore.MemcoreMarkOffsetFrom(dest, offsetData)
+
+	return dest
+}
+
+// PriorityQueueSnapshotRestore replaces the entire memory block of one queue
+// with that of another. Capacities must match exactly.
+func PriorityQueueSnapshotRestore[T any](dest, src memcore.MarkRaw) error {
+	dstHeader := memcore.MemcoreMarkDereferenceObjectUnsafe[PriorityQueue[T]](dest)
+	srcHeader := memcore.MemcoreMarkDereferenceObjectUnsafe[PriorityQueue[T]](src)
+
+	if dstHeader.capacity != srcHeader.capacity {
+		return fmt.Errorf("cannot restore snapshot: unequal capacities")
+	}
+
+	if dest == src {
+		return nil
+	}
+
+	totalBytes := PriorityQueueRequiredBytesGet[T](dstHeader.capacity)
+
+	dstAddr := memcore.MemcoreMarkDereferenceUnsafe(dest)
+	srcAddr := memcore.MemcoreMarkDereferenceUnsafe(src)
+
+	memcore.MemoryMoveNoHeapPointers(dstAddr, srcAddr, uintptr(totalBytes))
+
+	offsetData := uintptr(memcore.SizeOf[PriorityQueue[T]]())
+	dstHeader.data = memcore.MemcoreMarkOffsetFrom(dest, offsetData)
+
+	return nil
+}
+
 // PriorityQueueClear clears the queue, allowing it to be re-used.
 func PriorityQueueClear[T any](queue memcore.MarkRaw) {
 	header := memcore.MemcoreMarkDereferenceObject[PriorityQueue[T]](queue)
@@ -135,6 +225,15 @@ func PriorityQueueIsEmpty[T any](queue memcore.MarkRaw) bool {
 func PriorityQueueLengthGet[T any](queue memcore.MarkRaw) uint64 {
 	instance := memcore.MemcoreMarkDereferenceObject[PriorityQueue[T]](queue)
 	return instance.length
+}
+
+// PriorityQueueCapacityGet returns the current capacity.
+//
+//go:inline
+//go:nosplit
+func PriorityQueueCapacityGet[T any](queue memcore.MarkRaw) uint64 {
+	instance := memcore.MemcoreMarkDereferenceObject[PriorityQueue[T]](queue)
+	return instance.capacity
 }
 
 // --------------------------------------------------- PRIVATE ALGORITHMS
