@@ -162,9 +162,9 @@ func StringToGo(str memcore.MarkRaw) string {
 
 	data := StringDataPtrGet(str)
 	header := struct {
-		Data unsafe.Pointer
+		Data uintptr
 		Len  int
-	}{data, int(inst.length)}
+	}{uintptr(data), int(inst.length)}
 
 	return *(*string)(unsafe.Pointer(&header))
 }
