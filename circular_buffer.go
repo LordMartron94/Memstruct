@@ -157,17 +157,6 @@ func CircularBufferGetAtUnsafe[T any](buffer memcore.MarkRaw, logicalIdx uint64)
 	return ArrayItemGetAtUnsafe[T](instance.data, physicalIdx)
 }
 
-// CircularBufferUnaryExecute executes a function on each element in the buffer in logical order (oldest to newest).
-// The stride parameter allows processing every Nth element (1 = all elements).
-// This function is now optimized with stride unrolling.
-func CircularBufferUnaryExecute[T any](
-	buffer memcore.MarkRaw,
-	fn func(item T),
-	stride uint64,
-) {
-	CircularBufferUnaryReadOnlyExecute[T](buffer, CircularBufferUnaryReadOnlyOp[T](fn), stride)
-}
-
 // CircularBufferClear resets the buffer to empty state (does not zero memory).
 //
 //go:inline
@@ -664,6 +653,46 @@ type CircularBufferBinaryReadOnlyOp[TInput1, TInput2 any] func(itemA TInput1, it
 // CircularBufferBinaryOp is an operation that executes over two elements at the same logical index from different buffers.
 // It mutates.
 type CircularBufferBinaryOp[TInput1, TInput2, TOutput any] func(itemA TInput1, itemB TInput2) TOutput
+
+// CircularBufferUnaryExecute executes a stride of unary mutating operations,
+// writing results from the source buffer into the destination buffer.
+// This matches Vector's pattern where the non-readonly executor mutates a destination.
+//
+//go:inline
+func CircularBufferUnaryExecute[T, P any](
+	srcBuffer, dstBuffer memcore.MarkRaw,
+	op CircularBufferUnaryOp[T, P],
+	stride uint64,
+) {
+	srcInstance := memcore.MemcoreMarkDereferenceObject[CircularBuffer[T]](srcBuffer)
+	dstInstance := memcore.MemcoreMarkDereferenceObject[CircularBuffer[P]](dstBuffer)
+
+	if srcInstance.length != dstInstance.length {
+		panic(fmt.Errorf("cannot perform unary op: length mismatch (src=%d, dst=%d)", srcInstance.length, dstInstance.length))
+	}
+
+	if srcInstance.length == 0 {
+		return
+	}
+
+	srcArrayBase, srcArrayInst := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[T]](srcInstance.data)
+	srcArrayData := arrayComputeDataAddr(srcArrayInst, srcArrayBase)
+	srcItemSize := uintptr(srcArrayInst.itemSize)
+
+	dstArrayBase, dstArrayInst := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[P]](dstInstance.data)
+	dstArrayData := arrayComputeDataAddr(dstArrayInst, dstArrayBase)
+	dstItemSize := uintptr(dstArrayInst.itemSize)
+
+	circularBufferUnrolledDispatch[T](srcInstance, stride, func(logicalIdx uint64) {
+		srcPhysicalIdx := circularBufferLogicalToPhysical[T](srcInstance, logicalIdx)
+		dstPhysicalIdx := circularBufferLogicalToPhysical[P](dstInstance, logicalIdx)
+		srcVal := *(*T)(unsafe.Add(srcArrayData, uintptr(srcPhysicalIdx)*srcItemSize))
+		res := op(srcVal)
+		*(*P)(unsafe.Add(dstArrayData, uintptr(dstPhysicalIdx)*dstItemSize)) = res
+	})
+
+	dstInstance.version++
+}
 
 // CircularBufferUnaryReadOnlyExecute executes a stride of unary readonly operations with stride unrolling optimization.
 //
