@@ -708,6 +708,126 @@ func ArrayIsIdxValid[T any](array memcore.MarkRaw, idx uint64) bool {
 	return idx < instance.capacity
 }
 
+// ArraySort sorts the array in-place.
+//
+// This implementation uses an iterative Quicksort with Median-of-Three pivot
+// selection to ensure O(n log n) performance and zero stack-overflow risk.
+//
+// The comparison function should return:
+// a < b : -1 (or negative)
+// a == b : 0
+// a > b : 1 (or positive)
+func ArraySort[T any](array memcore.MarkRaw, cmp func(a, b T) int) {
+	base, inst := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[T]](array)
+
+	capacity := inst.capacity
+	if capacity <= 1 {
+		return
+	}
+
+	dataAddr := unsafe.Add(base, inst.dataAddrOffset)
+	elemSize := uintptr(inst.itemSize)
+
+	// Manual stack for partitioning bounds. 128 elements can handle
+	// up to 2^64 elements in the worst case.
+	var stack [128]int64
+	top := -1
+
+	// Push initial bounds
+	top++
+	stack[top] = 0
+	top++
+	stack[top] = int64(capacity - 1)
+
+	for top >= 0 {
+		high := stack[top]
+		top--
+		low := stack[top]
+		top--
+
+		if low < high {
+			// Median-of-Three pivot selection
+			mid := low + (high-low)/2
+
+			// Sort low, mid, and high pointers to find the median
+			valLow := *(*T)(unsafe.Add(dataAddr, uintptr(low)*elemSize))
+			valMid := *(*T)(unsafe.Add(dataAddr, uintptr(mid)*elemSize))
+			valHigh := *(*T)(unsafe.Add(dataAddr, uintptr(high)*elemSize))
+
+			if cmp(valMid, valLow) < 0 {
+				arraySwapRaw[T](dataAddr, low, mid, elemSize)
+			}
+			if cmp(valHigh, valLow) < 0 {
+				arraySwapRaw[T](dataAddr, low, high, elemSize)
+			}
+			if cmp(valHigh, valMid) < 0 {
+				arraySwapRaw[T](dataAddr, mid, high, elemSize)
+			}
+
+			// Place pivot at high-1 for partitioning
+			arraySwapRaw[T](dataAddr, mid, high, elemSize)
+
+			pivotIdx := arrayPartitionRaw(dataAddr, low, high, elemSize, cmp)
+
+			// Push larger partition first to keep manual stack depth O(log n)
+			if pivotIdx-low > high-pivotIdx {
+				if pivotIdx-1 > low {
+					top++
+					stack[top] = low
+					top++
+					stack[top] = pivotIdx - 1
+				}
+				if pivotIdx+1 < high {
+					top++
+					stack[top] = pivotIdx + 1
+					top++
+					stack[top] = high
+				}
+			} else {
+				if pivotIdx+1 < high {
+					top++
+					stack[top] = pivotIdx + 1
+					top++
+					stack[top] = high
+				}
+				if pivotIdx-1 > low {
+					top++
+					stack[top] = low
+					top++
+					stack[top] = pivotIdx - 1
+				}
+			}
+		}
+	}
+}
+
+// ArraySorted returns a sorted variant of this array.
+//
+// The comparison function should return:
+// a < b : -1 (or negative)
+// a == b : 0
+// a > b : 1 (or positive)
+func ArraySorted[T any](
+	array memcore.MarkRaw,
+	targetArrayAddr memcore.MarkRaw,
+	cmp func(a, b T) int,
+) {
+	srcBase, srcInst := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[T]](array)
+	dstBase, dstInst := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[T]](targetArrayAddr)
+
+	if srcInst.capacity != dstInst.capacity {
+		panic("ArraySorted: capacity mismatch")
+	}
+
+	srcData := unsafe.Add(srcBase, srcInst.dataAddrOffset)
+	dstData := unsafe.Add(dstBase, dstInst.dataAddrOffset)
+	totalBytes := uintptr(srcInst.capacity) * uintptr(srcInst.itemSize)
+
+	memcore.MemoryMoveNoHeapPointers(dstData, srcData, totalBytes)
+
+	ArraySort[T](targetArrayAddr, cmp)
+}
+
 // -------------------------- ARRAY VIEW
 
 // ArrayViewLengthGet returns the length of the current view.
@@ -979,4 +1099,41 @@ func arrayGuaranteeIdxValidity[T any](instance *Array[T], idx uint64) error {
 //go:inline
 func arrayComputeDataAddr[T any](instance *Array[T], baseAddr unsafe.Pointer) unsafe.Pointer {
 	return unsafe.Add(baseAddr, instance.dataAddrOffset)
+}
+
+//go:inline
+func arrayPartitionRaw[T any](
+	data unsafe.Pointer,
+	low, high int64,
+	size uintptr,
+	cmp func(a, b T) int,
+) int64 {
+	pivotPtr := unsafe.Add(data, uintptr(high)*size)
+	pivot := *(*T)(pivotPtr)
+
+	i := low - 1
+	for j := low; j < high; j++ {
+		currentPtr := unsafe.Add(data, uintptr(j)*size)
+		currentVal := *(*T)(currentPtr)
+
+		if cmp(currentVal, pivot) < 0 {
+			i++
+			arraySwapRaw[T](data, i, j, size)
+		}
+	}
+	arraySwapRaw[T](data, i+1, high, size)
+	return i + 1
+}
+
+//go:inline
+func arraySwapRaw[T any](data unsafe.Pointer, i, j int64, size uintptr) {
+	if i == j {
+		return
+	}
+	ptrI := (*T)(unsafe.Add(data, uintptr(i)*size))
+	ptrJ := (*T)(unsafe.Add(data, uintptr(j)*size))
+
+	tmp := *ptrI
+	*ptrI = *ptrJ
+	*ptrJ = tmp
 }

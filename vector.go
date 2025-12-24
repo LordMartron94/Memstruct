@@ -461,88 +461,10 @@ func VectorIsIdxValid[T foundation.Numeric](vector memcore.MarkRaw, idx uint64) 
 //
 // This implementation uses an iterative Quicksort with Median-of-Three pivot
 // selection to ensure O(n log n) performance and zero stack-overflow risk.
+//
+// Internally delegates to ArraySort since Vector is a constrained wrapper around Array.
 func VectorSort[T foundation.Numeric](vector memcore.MarkRaw, cmp func(a, b T) int) {
-	base, inst := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Vector[T]](vector)
-
-	capacity := inst.capacity
-	if capacity <= 1 {
-		return
-	}
-
-	dataAddr := unsafe.Add(base, inst.dataAddrOffset)
-	elemSize := uintptr(inst.itemSize)
-
-	// Manual stack for partitioning bounds. 128 elements can handle
-	// up to 2^64 elements in the worst case.
-	var stack [128]int64
-	top := -1
-
-	// Push initial bounds
-	top++
-	stack[top] = 0
-	top++
-	stack[top] = int64(capacity - 1)
-
-	for top >= 0 {
-		high := stack[top]
-		top--
-		low := stack[top]
-		top--
-
-		if low < high {
-			// Median-of-Three pivot selection
-			mid := low + (high-low)/2
-
-			// Sort low, mid, and high pointers to find the median
-			valLow := *(*T)(unsafe.Add(dataAddr, uintptr(low)*elemSize))
-			valMid := *(*T)(unsafe.Add(dataAddr, uintptr(mid)*elemSize))
-			valHigh := *(*T)(unsafe.Add(dataAddr, uintptr(high)*elemSize))
-
-			if cmp(valMid, valLow) < 0 {
-				swapRaw[T](dataAddr, low, mid, elemSize)
-			}
-			if cmp(valHigh, valLow) < 0 {
-				swapRaw[T](dataAddr, low, high, elemSize)
-			}
-			if cmp(valHigh, valMid) < 0 {
-				swapRaw[T](dataAddr, mid, high, elemSize)
-			}
-
-			// Place pivot at high-1 for partitioning
-			swapRaw[T](dataAddr, mid, high, elemSize)
-
-			pivotIdx := partitionRaw(dataAddr, low, high, elemSize, cmp)
-
-			// Push larger partition first to keep manual stack depth O(log n)
-			if pivotIdx-low > high-pivotIdx {
-				if pivotIdx-1 > low {
-					top++
-					stack[top] = low
-					top++
-					stack[top] = pivotIdx - 1
-				}
-				if pivotIdx+1 < high {
-					top++
-					stack[top] = pivotIdx + 1
-					top++
-					stack[top] = high
-				}
-			} else {
-				if pivotIdx+1 < high {
-					top++
-					stack[top] = pivotIdx + 1
-					top++
-					stack[top] = high
-				}
-				if pivotIdx-1 > low {
-					top++
-					stack[top] = low
-					top++
-					stack[top] = pivotIdx - 1
-				}
-			}
-		}
-	}
+	ArraySort[T](vector, cmp)
 }
 
 // VectorSorted returns a sorted variant of this vector.
@@ -896,41 +818,4 @@ func vectorUnrolledGeneric[T foundation.Numeric](capacity uint64, stride uint64,
 	for ; i < capacity; i++ {
 		apply(uintptr(i))
 	}
-}
-
-//go:inline
-func partitionRaw[T foundation.Numeric](
-	data unsafe.Pointer,
-	low, high int64,
-	size uintptr,
-	cmp func(a, b T) int,
-) int64 {
-	pivotPtr := unsafe.Add(data, uintptr(high)*size)
-	pivot := *(*T)(pivotPtr)
-
-	i := low - 1
-	for j := low; j < high; j++ {
-		currentPtr := unsafe.Add(data, uintptr(j)*size)
-		currentVal := *(*T)(currentPtr)
-
-		if cmp(currentVal, pivot) < 0 {
-			i++
-			swapRaw[T](data, i, j, size)
-		}
-	}
-	swapRaw[T](data, i+1, high, size)
-	return i + 1
-}
-
-//go:inline
-func swapRaw[T foundation.Numeric](data unsafe.Pointer, i, j int64, size uintptr) {
-	if i == j {
-		return
-	}
-	ptrI := (*T)(unsafe.Add(data, uintptr(i)*size))
-	ptrJ := (*T)(unsafe.Add(data, uintptr(j)*size))
-
-	tmp := *ptrI
-	*ptrI = *ptrJ
-	*ptrJ = tmp
 }
