@@ -139,6 +139,16 @@ func VectorCapacityGet[T foundation.Numeric](vector memcore.MarkRaw) uint64 {
 	return ArrayCapacityGet[T](vector)
 }
 
+// VectorVersionGet returns the current version of the vector.
+//
+// Version increments on every modification to the vector data, allowing cache invalidation
+// mechanisms to detect when cached values become stale.
+//
+//go:inline
+func VectorVersionGet[T foundation.Numeric](vector memcore.MarkRaw) uint64 {
+	return ArrayVersionGet[T](vector)
+}
+
 // VectorItemGetAt returns T at idx within the vector.
 // It returns an error if the idx is invalid.
 //

@@ -45,6 +45,7 @@ type HashMap[TKey, TValue any] struct {
 	keyComparerID         memcore.FunctionID
 	keyMarkRetrieverID    memcore.FunctionID
 	groupMask             uint64
+	version               uint64
 }
 
 // KeyComparer defines the contract when two keys are considered equal.
@@ -113,6 +114,7 @@ func HashMapInitializeAt[TKey, TValue any](
 		keyComparerID:      memcore.MemcoreFunctionRegisterTyped(keyCmp),
 		keyMarkRetrieverID: memcore.MemcoreFunctionRegisterTyped(keyMark),
 		groupMask:          numGroups - 1,
+		version:            1,
 	}
 }
 
@@ -167,6 +169,7 @@ func HashMapItemAddUnsafe[TKey, TValue any](instance memcore.MarkRaw, key TKey, 
 	)
 	if found {
 		ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot).value = value
+		hashMapIncrementVersion[TKey, TValue](instance)
 		return
 	}
 	if !hasFree {
@@ -179,6 +182,7 @@ func HashMapItemAddUnsafe[TKey, TValue any](instance memcore.MarkRaw, key TKey, 
 	pair.keyUnsafe = uintptr(unsafe.Pointer(keyPtr))
 	ctrlPtr := ArrayItemPtrGetAtUnsafe[ctrlGroup](h.metaData, groupIDX)
 	*ctrlPtr = updateCtrlByte(*ctrlPtr, slot, ctrl(h2))
+	hashMapIncrementVersion[TKey, TValue](instance)
 }
 
 // HashMapItemAddFast inserts or updates a key–value pair.
@@ -201,6 +205,7 @@ func HashMapItemAddFast[TKey, TValue any](
 		keyCmp)
 	if found {
 		ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot).value = value
+		hashMapIncrementVersion[TKey, TValue](instance)
 		return
 	}
 	if !hasFree {
@@ -213,6 +218,7 @@ func HashMapItemAddFast[TKey, TValue any](
 	pair.keyUnsafe = uintptr(unsafe.Pointer(keyPtr))
 	ctrlPtr := ArrayItemPtrGetAtUnsafe[ctrlGroup](h.metaData, groupIDX)
 	*ctrlPtr = updateCtrlByte(*ctrlPtr, slot, ctrl(h2))
+	hashMapIncrementVersion[TKey, TValue](instance)
 }
 
 // HashMapItemAddFastUnsafe inserts or updates a key–value pair.
@@ -238,6 +244,7 @@ func HashMapItemAddFastUnsafe[TKey, TValue any](
 		keyCmp)
 	if found {
 		ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot).value = value
+		hashMapIncrementVersion[TKey, TValue](instance)
 		return
 	}
 	if !hasFree {
@@ -250,6 +257,7 @@ func HashMapItemAddFastUnsafe[TKey, TValue any](
 	pair.keyUnsafe = uintptr(unsafe.Pointer(keyPtr))
 	ctrlPtr := ArrayItemPtrGetAtUnsafe[ctrlGroup](h.metaData, groupIDX)
 	*ctrlPtr = updateCtrlByte(*ctrlPtr, slot, ctrl(h2))
+	hashMapIncrementVersion[TKey, TValue](instance)
 }
 
 // HashMapItemGet retrieves the value for a key.
@@ -493,6 +501,7 @@ func HashMapItemDelete[TKey, TValue any](instance memcore.MarkRaw, key TKey) {
 
 	ctrlPtr := ArrayItemPtrGetAtUnsafe[ctrlGroup](h.metaData, groupIDX)
 	*ctrlPtr = updateCtrlByte(*ctrlPtr, slot, ctrlDeleted)
+	hashMapIncrementVersion[TKey, TValue](instance)
 }
 
 // HashMapItemDeleteFast marks an entry as deleted.
@@ -522,6 +531,7 @@ func HashMapItemDeleteFast[TKey, TValue any](
 
 	ctrlPtr := ArrayItemPtrGetAtUnsafe[ctrlGroup](h.metaData, groupIDX)
 	*ctrlPtr = updateCtrlByte(*ctrlPtr, slot, ctrlDeleted)
+	hashMapIncrementVersion[TKey, TValue](instance)
 }
 
 // HashMapItemDeleteUnsafe marks an entry as deleted.
@@ -550,6 +560,7 @@ func HashMapItemDeleteUnsafe[TKey, TValue any](instance memcore.MarkRaw, key TKe
 
 	ctrlPtr := ArrayItemPtrGetAtUnsafe[ctrlGroup](h.metaData, groupIDX)
 	*ctrlPtr = updateCtrlByte(*ctrlPtr, slot, ctrlDeleted)
+	hashMapIncrementVersion[TKey, TValue](instance)
 }
 
 // HashMapItemDeleteFastUnsafe marks an entry as deleted.
@@ -582,6 +593,7 @@ func HashMapItemDeleteFastUnsafe[TKey, TValue any](
 
 	ctrlPtr := ArrayItemPtrGetAtUnsafe[ctrlGroup](h.metaData, groupIDX)
 	*ctrlPtr = updateCtrlByte(*ctrlPtr, slot, ctrlDeleted)
+	hashMapIncrementVersion[TKey, TValue](instance)
 }
 
 // HashMapClear clears the map by marking all slots inactive and resetting control bytes.
@@ -596,6 +608,7 @@ func HashMapClear[TKey, TValue any](instance memcore.MarkRaw) {
 	ArrayForEachUnsafe[ctrlGroup](h.metaData, func(ptr unsafe.Pointer, _ uint64) {
 		*(*uint64)(ptr) = bitsetEmpty
 	})
+	hashMapIncrementVersion[TKey, TValue](instance)
 }
 
 // HashMapClearAndZero fully zeroes metadata and data sections.
@@ -603,6 +616,7 @@ func HashMapClearAndZero[TKey, TValue any](instance memcore.MarkRaw) {
 	h := memcore.MemcoreMarkDereferenceObjectUnsafe[HashMap[TKey, TValue]](instance)
 	ArrayForEachUnsafe[ctrlGroup](h.metaData, func(p unsafe.Pointer, _ uint64) { *(*uint64)(p) = bitsetEmpty })
 	ArrayClear[KeyValuePair[TKey, TValue]](h.data)
+	hashMapIncrementVersion[TKey, TValue](instance)
 }
 
 // HashMapForEach iterates over all active key–value pairs in the map.
@@ -662,6 +676,17 @@ func HashMapValues[TKey, TValue any](instance memcore.MarkRaw) []*TValue {
 	})
 
 	return values
+}
+
+// HashMapVersionGet returns the current version of the hashmap.
+//
+// Version increments on every modification to the hashmap data, allowing cache invalidation
+// mechanisms to detect when cached values become stale.
+//
+//go:inline
+func HashMapVersionGet[TKey, TValue any](instance memcore.MarkRaw) uint64 {
+	h := memcore.MemcoreMarkDereferenceObjectUnsafe[HashMap[TKey, TValue]](instance)
+	return h.version
 }
 
 // ------------------------------------------------------------
@@ -801,4 +826,10 @@ func updateCtrlByte(group ctrlGroup, slot uint64, c ctrl) ctrlGroup {
 	shift := slot * 8
 	mask := uint64(byteMask) << shift
 	return ctrlGroup((uint64(group) &^ mask) | (uint64(c) << shift))
+}
+
+//go:inline
+func hashMapIncrementVersion[TKey, TValue any](instance memcore.MarkRaw) {
+	h := memcore.MemcoreMarkDereferenceObjectUnsafe[HashMap[TKey, TValue]](instance)
+	h.version++
 }

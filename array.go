@@ -24,6 +24,7 @@ type Array[T any] struct {
 	setFnID memcore.FunctionID
 
 	itemSize uintptr
+	version  uint64
 }
 
 // ArrayView represents a view around an array.
@@ -47,6 +48,7 @@ func ArrayInitializeAt[T any](arrayAddr memcore.MarkRaw, capacity uint64) {
 		dataAddrOffset: uintptr(headerSize),
 		capacity:       capacity,
 		itemSize:       uintptr(itemSize),
+		version:        1,
 	}
 
 	arrayPtr.setFnID = memcore.MemcoreFunctionRegisterTyped(
@@ -135,6 +137,7 @@ func ArrayCopyFrom[T any](dest memcore.MarkRaw, src memcore.MarkRaw, destStartId
 	totalBytes := uintptr(srcCap) * uintptr(srcHeader.itemSize)
 	memcore.MemoryMoveNoHeapPointers(dstPtr, srcPtr, totalBytes)
 
+	arrayIncrementVersion[T](dest)
 	return nil
 }
 
@@ -169,6 +172,7 @@ func ArrayCopyFromRange[T any](
 	bytes := uintptr(count) * srcHeader.itemSize
 	memcore.MemoryMoveNoHeapPointers(dstPtr, srcPtr, bytes)
 
+	arrayIncrementVersion[T](dest)
 	return nil
 }
 
@@ -336,6 +340,7 @@ func ArraySetAt[T any](array memcore.MarkRaw, idx uint64, value T) error {
 
 	memcore.MemcoreFunctionRetrieveTyped[setFn[T]](instance.setFnID)(itemPtr, value)
 
+	arrayIncrementVersion[T](array)
 	return nil
 }
 
@@ -349,6 +354,7 @@ func ArraySetAtUnsafe[T any](array memcore.MarkRaw, idx uint64, value T) {
 	itemPtr := arrayGetPtrAtIdx(instance, baseAddr, idx)
 
 	memcore.MemcoreFunctionRetrieveTyped[setFn[T]](instance.setFnID)(itemPtr, value)
+	arrayIncrementVersion[T](array)
 }
 
 // ArraySetAll sets all values within the array to value T.
@@ -358,6 +364,7 @@ func ArraySetAll[T any](array memcore.MarkRaw, v T) {
 	ArrayForEachUnsafe[T](array, func(ptr unsafe.Pointer, idx uint64) {
 		*(*T)(ptr) = v
 	})
+	arrayIncrementVersion[T](array)
 }
 
 // ArrayZeroAll sets all values within the array to its zero value.
@@ -369,6 +376,7 @@ func ArrayZeroAll[T any](array memcore.MarkRaw) {
 	ArrayForEachUnsafe[T](array, func(ptr unsafe.Pointer, idx uint64) {
 		*(*T)(ptr) = zero
 	})
+	arrayIncrementVersion[T](array)
 }
 
 // ArrayForEachUnsafe calls a function for every element in the array.
@@ -499,6 +507,7 @@ func ArrayReplaceInternalUnsafe[T any](array memcore.MarkRaw, srcIdx, destIdx ui
 	dstPtr := arrayGetPtrAtIdx(instance, baseAddr, destIdx)
 
 	memcore.MemoryMoveNoHeapPointers(dstPtr, srcPtr, instance.itemSize)
+	arrayIncrementVersion[T](array)
 }
 
 // ArrayShiftRight shifts a contiguous range of elements in the array
@@ -564,6 +573,7 @@ func ArrayShiftRightUnsafe[T any](array memcore.MarkRaw, from, to, count uint64)
 	dstPtr := arrayGetPtrAtIdx(instance, baseAddr, from+count)
 
 	memcore.MemoryMoveNoHeapPointers(dstPtr, srcPtr, uintptr((to-from+1)*uint64(elemSize)))
+	arrayIncrementVersion[T](array)
 }
 
 // ArrayShiftLeft shifts a contiguous range of elements in the array
@@ -675,6 +685,7 @@ func ArrayDeleteAt[T any](array memcore.MarkRaw, idx uint64) error {
 
 	currentPtr := arrayGetPtrAtIdx(instance, baseAddr, idx)
 	memcore.MemoryClearNoHeapPointers(currentPtr, uintptr(instance.itemSize))
+	arrayIncrementVersion[T](array)
 	return nil
 }
 
@@ -688,6 +699,7 @@ func ArrayDeleteAtUnsafe[T any](array memcore.MarkRaw, idx uint64) {
 	baseAddr, instance := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[T]](array)
 	currentPtr := arrayGetPtrAtIdx(instance, baseAddr, idx)
 	memcore.MemoryClearNoHeapPointers(currentPtr, uintptr(instance.itemSize))
+	arrayIncrementVersion[T](array)
 }
 
 // ArrayClear resets the entire array's memory to 0, allowing it to be reused.
@@ -698,6 +710,7 @@ func ArrayDeleteAtUnsafe[T any](array memcore.MarkRaw, idx uint64) {
 func ArrayClear[T any](array memcore.MarkRaw) {
 	baseAddr, instance := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[T]](array)
 	memcore.MemoryClearNoHeapPointers(arrayComputeDataAddr(instance, baseAddr), uintptr(instance.capacity)*uintptr(instance.itemSize))
+	arrayIncrementVersion[T](array)
 }
 
 // ArrayIsIdxValid checks whether the given index is valid.
@@ -799,6 +812,7 @@ func ArraySort[T any](array memcore.MarkRaw, cmp func(a, b T) int) {
 			}
 		}
 	}
+	arrayIncrementVersion[T](array)
 }
 
 // ArraySorted returns a sorted variant of this array.
@@ -826,6 +840,7 @@ func ArraySorted[T any](
 	memcore.MemoryMoveNoHeapPointers(dstData, srcData, totalBytes)
 
 	ArraySort[T](targetArrayAddr, cmp)
+	// Note: ArraySort already increments version, so no need to increment here
 }
 
 // -------------------------- ARRAY VIEW
@@ -1099,6 +1114,23 @@ func arrayGuaranteeIdxValidity[T any](instance *Array[T], idx uint64) error {
 //go:inline
 func arrayComputeDataAddr[T any](instance *Array[T], baseAddr unsafe.Pointer) unsafe.Pointer {
 	return unsafe.Add(baseAddr, instance.dataAddrOffset)
+}
+
+// ArrayVersionGet returns the current version of the array.
+//
+// Version increments on every modification to the array data, allowing cache invalidation
+// mechanisms to detect when cached values become stale.
+//
+//go:inline
+func ArrayVersionGet[T any](array memcore.MarkRaw) uint64 {
+	instance := memcore.MemcoreMarkDereferenceObjectUnsafe[Array[T]](array)
+	return instance.version
+}
+
+//go:inline
+func arrayIncrementVersion[T any](array memcore.MarkRaw) {
+	instance := memcore.MemcoreMarkDereferenceObjectUnsafe[Array[T]](array)
+	instance.version++
 }
 
 //go:inline
