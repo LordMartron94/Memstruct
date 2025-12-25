@@ -59,7 +59,7 @@ func VectorInitializeAt[T foundation.Numeric](vectorAddr memcore.MarkRaw, capaci
 // VectorInitializeFrom initializes a new vector at vectorAddr with the contents of src.
 // Capacity must be >= src capacity.
 func VectorInitializeFrom[T foundation.Numeric](vectorAddr memcore.MarkRaw, src memcore.MarkRaw, newCapacity uint64) error {
-	return VectorInitializeFrom[T](vectorAddr, src, newCapacity)
+	return ArrayInitializeFrom[T](vectorAddr, src, newCapacity)
 }
 
 // VectorSnapshotCreate creates a deep copy of an vector at a new memory location
