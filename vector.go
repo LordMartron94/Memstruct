@@ -552,6 +552,109 @@ func VectorCopyFromRange[T foundation.Numeric](
 }
 
 /*
+VectorSetFromSliceRange copies a contiguous range of elements from a Go slice into the vector,
+starting at the specified vector index.
+
+This function wraps ArraySetFromSliceRange for numeric types, copying elements from the Go slice
+in the range [sliceStartIdx, sliceEndIdx) (sliceStartIdx inclusive, sliceEndIdx exclusive) into
+the vector starting at vectorStartIdx. The slice and vector must have the same element type,
+and bounds are validated before copying.
+
+Use cases:
+- Initializing vectors from Go slice data
+- Bulk data transfer from Go slices to manually managed memory
+- Efficient data migration from GC-managed to non-GC memory
+- Populating vectors from external data sources (files, network, etc.)
+
+Time complexity: O(n) - where n is the number of elements in the range (sliceEndIdx - sliceStartIdx)
+Space complexity: O(1) - only local variables used, no allocations
+
+Prerequisites:
+- vector must point to a valid Vector instance of type T
+- vector must live in memory managed by memcore
+- sliceStartIdx must be less than sliceEndIdx (range must be valid)
+- sliceEndIdx must not exceed len(slice)
+- vectorStartIdx + (sliceEndIdx - sliceStartIdx) must not exceed vector capacity
+- slice must not be empty if sliceStartIdx < sliceEndIdx
+
+Edge cases:
+- Returns error if sliceStartIdx >= sliceEndIdx (invalid range)
+- Returns error if sliceEndIdx exceeds len(slice)
+- Returns error if vector capacity is insufficient
+- The range [sliceStartIdx, sliceEndIdx) is half-open (sliceStartIdx inclusive, sliceEndIdx exclusive)
+- Increments vector version after successful copy
+- Empty range (sliceStartIdx == sliceEndIdx) is valid and performs no copy
+
+Additional notes:
+- This function works with both contiguous and non-contiguous vector layouts
+- The copy operation uses efficient bulk memory move operations (memmove)
+- The vector's version is incremented to indicate modification
+- Source slice is not modified
+- Internally delegates to ArraySetFromSliceRange
+*/
+func VectorSetFromSliceRange[T foundation.Numeric](
+	vector memcore.MarkRaw,
+	slice []T,
+	sliceStartIdx uint64,
+	sliceEndIdx uint64,
+	vectorStartIdx uint64,
+) error {
+	return ArraySetFromSliceRange[T](vector, slice, sliceStartIdx, sliceEndIdx, vectorStartIdx)
+}
+
+/*
+VectorSetFromSliceRangeUnsafe copies a contiguous range of elements from a Go slice into the vector,
+starting at the specified vector index. It performs no bounds checks, so callers must ensure valid indices.
+
+This function wraps ArraySetFromSliceRangeUnsafe for numeric types, copying elements from the Go slice
+in the range [sliceStartIdx, sliceEndIdx) (sliceStartIdx inclusive, sliceEndIdx exclusive) into
+the vector starting at vectorStartIdx. The slice and vector must have the same element type.
+No validation is performed.
+
+Use cases:
+- High-performance hot paths where bounds are guaranteed by the caller
+- Bulk data transfer in tight loops with pre-validated ranges
+- Performance-critical initialization code
+- Internal operations where safety is guaranteed by design
+
+Time complexity: O(n) - where n is the number of elements in the range (sliceEndIdx - sliceStartIdx)
+Space complexity: O(1) - only local variables used, no allocations
+
+Prerequisites:
+- vector must point to a valid Vector instance of type T
+- vector must live in memory managed by memcore
+- sliceStartIdx must be less than sliceEndIdx (range must be valid)
+- sliceEndIdx must not exceed len(slice) (caller must validate)
+- vectorStartIdx + (sliceEndIdx - sliceStartIdx) must not exceed vector capacity (caller must validate)
+- slice must not be empty if sliceStartIdx < sliceEndIdx
+
+Edge cases:
+- No validation is performed; invalid ranges may cause panics or memory corruption
+- Empty range (sliceStartIdx == sliceEndIdx) is valid and performs no copy
+- Increments vector version after copy
+- The range [sliceStartIdx, sliceEndIdx) is half-open (sliceStartIdx inclusive, sliceEndIdx exclusive)
+
+Additional notes:
+- This function works with both contiguous and non-contiguous vector layouts
+- The copy operation uses efficient bulk memory move operations (memmove)
+- The vector's version is incremented to indicate modification
+- Source slice is not modified
+- Internally delegates to ArraySetFromSliceRangeUnsafe
+- Caller is responsible for all bounds checking
+*/
+//go:nosplit
+//go:inline
+func VectorSetFromSliceRangeUnsafe[T foundation.Numeric](
+	vector memcore.MarkRaw,
+	slice []T,
+	sliceStartIdx uint64,
+	sliceEndIdx uint64,
+	vectorStartIdx uint64,
+) {
+	ArraySetFromSliceRangeUnsafe[T](vector, slice, sliceStartIdx, sliceEndIdx, vectorStartIdx)
+}
+
+/*
 VectorHeaderSizeBytesGet returns the number of bytes required to store the Vector header structure.
 
 This function wraps ArrayHeaderSizeBytesGet for numeric types, calculating the size of the
@@ -744,6 +847,89 @@ func VectorSetAtUnsafe[T foundation.Numeric](vector memcore.MarkRaw, idx uint64,
 //go:inline
 func VectorSetAll[T foundation.Numeric](vector memcore.MarkRaw, v T) {
 	ArraySetAll(vector, v)
+}
+
+/*
+VectorSetFromSlice copies all elements from a Go slice into the vector, starting at index 0.
+
+This function wraps ArraySetFromSlice for numeric types. It is a convenience wrapper around
+VectorSetFromSliceRange that copies the entire slice (from index 0 to len(slice)) into the
+vector starting at index 0. The slice and vector must have the same element type, and bounds
+are validated before copying.
+
+Use cases:
+- Initializing vectors from Go slice data
+- Bulk data transfer from Go slices to manually managed memory
+- Efficient data migration from GC-managed to non-GC memory
+- Populating vectors from external data sources (files, network, etc.)
+
+Time complexity: O(n) - where n is len(slice) (number of elements copied)
+Space complexity: O(1) - only local variables used, no allocations
+
+Prerequisites:
+- vector must point to a valid Vector instance of type T
+- vector must live in memory managed by memcore
+- len(slice) must not exceed vector capacity
+
+Edge cases:
+- Returns error if len(slice) exceeds vector capacity
+- Empty slice is valid and performs no copy
+- If len(slice) < capacity, only the first len(slice) elements are copied; remaining elements unchanged
+- Increments vector version after successful copy
+
+Additional notes:
+- This function works with both contiguous and non-contiguous vector layouts
+- The copy operation uses efficient bulk memory move operations (memmove)
+- The vector's version is incremented to indicate modification
+- Source slice is not modified
+- Internally delegates to ArraySetFromSlice
+*/
+//go:inline
+func VectorSetFromSlice[T foundation.Numeric](vector memcore.MarkRaw, slice []T) error {
+	return ArraySetFromSlice[T](vector, slice)
+}
+
+/*
+VectorSetFromSliceUnsafe copies all elements from a Go slice into the vector, starting at index 0.
+It performs no bounds checks, so callers must ensure the slice length does not exceed vector capacity.
+
+This function wraps ArraySetFromSliceUnsafe for numeric types. It is a convenience wrapper around
+VectorSetFromSliceRangeUnsafe that copies the entire slice (from index 0 to len(slice)) into
+the vector starting at index 0. The slice and vector must have the same element type.
+No validation is performed.
+
+Use cases:
+- High-performance hot paths where bounds are guaranteed by the caller
+- Bulk data transfer in tight loops with pre-validated data
+- Performance-critical initialization code
+- Internal operations where safety is guaranteed by design
+
+Time complexity: O(n) - where n is len(slice) (number of elements copied)
+Space complexity: O(1) - only local variables used, no allocations
+
+Prerequisites:
+- vector must point to a valid Vector instance of type T
+- vector must live in memory managed by memcore
+- len(slice) must not exceed vector capacity (caller must validate)
+
+Edge cases:
+- No validation is performed; slice length exceeding capacity may cause memory corruption
+- Empty slice is valid and performs no copy
+- If len(slice) < capacity, only the first len(slice) elements are copied; remaining elements unchanged
+- Increments vector version after copy
+
+Additional notes:
+- This function works with both contiguous and non-contiguous vector layouts
+- The copy operation uses efficient bulk memory move operations (memmove)
+- The vector's version is incremented to indicate modification
+- Source slice is not modified
+- Internally delegates to ArraySetFromSliceUnsafe
+- Caller is responsible for all bounds checking
+*/
+//go:nosplit
+//go:inline
+func VectorSetFromSliceUnsafe[T foundation.Numeric](vector memcore.MarkRaw, slice []T) {
+	ArraySetFromSliceUnsafe[T](vector, slice)
 }
 
 // VectorZeroAll sets all values within the Vector to its zero value.

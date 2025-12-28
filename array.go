@@ -659,6 +659,147 @@ func ArrayCopyFromRange[T any](
 	return nil
 }
 
+/*
+ArraySetFromSliceRange copies a contiguous range of elements from a Go slice into the array,
+starting at the specified array index.
+
+This function copies elements from the Go slice in the range [sliceStartIdx, sliceEndIdx)
+(sliceStartIdx inclusive, sliceEndIdx exclusive) into the array starting at arrayStartIdx.
+The slice and array must have the same element type, and bounds are validated before copying.
+
+Use cases:
+- Initializing arrays from Go slice data
+- Bulk data transfer from Go slices to manually managed memory
+- Efficient data migration from GC-managed to non-GC memory
+- Populating arrays from external data sources (files, network, etc.)
+
+Time complexity: O(n) - where n is the number of elements in the range (sliceEndIdx - sliceStartIdx)
+Space complexity: O(1) - only local variables used, no allocations
+
+Prerequisites:
+- array must point to a valid Array instance of type T
+- array must live in memory managed by memcore
+- sliceStartIdx must be less than sliceEndIdx (range must be valid)
+- sliceEndIdx must not exceed len(slice)
+- arrayStartIdx + (sliceEndIdx - sliceStartIdx) must not exceed array capacity
+- slice must not be empty if sliceStartIdx < sliceEndIdx
+
+Edge cases:
+- Returns error if sliceStartIdx >= sliceEndIdx (invalid range)
+- Returns error if sliceEndIdx exceeds len(slice)
+- Returns error if array capacity is insufficient
+- The range [sliceStartIdx, sliceEndIdx) is half-open (sliceStartIdx inclusive, sliceEndIdx exclusive)
+- Increments array version after successful copy
+- Empty range (sliceStartIdx == sliceEndIdx) is valid and performs no copy
+
+Additional notes:
+- This function works with both contiguous and non-contiguous array layouts
+- The copy operation uses efficient bulk memory move operations (memmove)
+- The array's version is incremented to indicate modification
+- Source slice is not modified
+- Uses unsafe pointer operations for maximum performance
+*/
+func ArraySetFromSliceRange[T any](
+	array memcore.MarkRaw,
+	slice []T,
+	sliceStartIdx uint64,
+	sliceEndIdx uint64,
+	arrayStartIdx uint64,
+) error {
+	if sliceStartIdx >= sliceEndIdx {
+		return fmt.Errorf("ArraySetFromSliceRange: sliceStartIdx must be < sliceEndIdx")
+	}
+
+	sliceLen := uint64(len(slice))
+	if sliceEndIdx > sliceLen {
+		return fmt.Errorf("ArraySetFromSliceRange: sliceEndIdx exceeds slice length")
+	}
+
+	if sliceLen == 0 {
+		return nil
+	}
+
+	arrayBase, arrayHeader := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[T]](array)
+
+	count := sliceEndIdx - sliceStartIdx
+	if arrayStartIdx+count > arrayHeader.capacity {
+		return fmt.Errorf("ArraySetFromSliceRange: insufficient array capacity")
+	}
+
+	slicePtr := unsafe.Pointer(&slice[sliceStartIdx])
+	dstPtr := unsafe.Add(arrayComputeDataAddr(arrayHeader, arrayBase), uintptr(arrayStartIdx)*arrayHeader.itemSize)
+
+	bytes := uintptr(count) * arrayHeader.itemSize
+	memcore.MemoryMoveNoHeapPointers(dstPtr, slicePtr, bytes)
+
+	arrayIncrementVersion[T](array)
+	return nil
+}
+
+/*
+ArraySetFromSliceRangeUnsafe copies a contiguous range of elements from a Go slice into the array,
+starting at the specified array index. It performs no bounds checks, so callers must ensure valid indices.
+
+This function copies elements from the Go slice in the range [sliceStartIdx, sliceEndIdx)
+(sliceStartIdx inclusive, sliceEndIdx exclusive) into the array starting at arrayStartIdx.
+The slice and array must have the same element type. No validation is performed.
+
+Use cases:
+- High-performance hot paths where bounds are guaranteed by the caller
+- Bulk data transfer in tight loops with pre-validated ranges
+- Performance-critical initialization code
+- Internal operations where safety is guaranteed by design
+
+Time complexity: O(n) - where n is the number of elements in the range (sliceEndIdx - sliceStartIdx)
+Space complexity: O(1) - only local variables used, no allocations
+
+Prerequisites:
+- array must point to a valid Array instance of type T
+- array must live in memory managed by memcore
+- sliceStartIdx must be less than sliceEndIdx (range must be valid)
+- sliceEndIdx must not exceed len(slice) (caller must validate)
+- arrayStartIdx + (sliceEndIdx - sliceStartIdx) must not exceed array capacity (caller must validate)
+- slice must not be empty if sliceStartIdx < sliceEndIdx
+
+Edge cases:
+- No validation is performed; invalid ranges may cause panics or memory corruption
+- Empty range (sliceStartIdx == sliceEndIdx) is valid and performs no copy
+- Increments array version after copy
+- The range [sliceStartIdx, sliceEndIdx) is half-open (sliceStartIdx inclusive, sliceEndIdx exclusive)
+
+Additional notes:
+- This function works with both contiguous and non-contiguous array layouts
+- The copy operation uses efficient bulk memory move operations (memmove)
+- The array's version is incremented to indicate modification
+- Source slice is not modified
+- Uses unsafe pointer operations for maximum performance
+- Caller is responsible for all bounds checking
+*/
+//go:nosplit
+//go:inline
+func ArraySetFromSliceRangeUnsafe[T any](
+	array memcore.MarkRaw,
+	slice []T,
+	sliceStartIdx uint64,
+	sliceEndIdx uint64,
+	arrayStartIdx uint64,
+) {
+	if sliceStartIdx >= sliceEndIdx {
+		return
+	}
+
+	arrayBase, arrayHeader := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[T]](array)
+
+	count := sliceEndIdx - sliceStartIdx
+	slicePtr := unsafe.Pointer(&slice[sliceStartIdx])
+	dstPtr := unsafe.Add(arrayComputeDataAddr(arrayHeader, arrayBase), uintptr(arrayStartIdx)*arrayHeader.itemSize)
+
+	bytes := uintptr(count) * arrayHeader.itemSize
+	memcore.MemoryMoveNoHeapPointers(dstPtr, slicePtr, bytes)
+
+	arrayIncrementVersion[T](array)
+}
+
 // ArrayHeaderSizeBytesGet returns the required bytes for the Array header.
 //
 //go:inline
@@ -848,6 +989,87 @@ func ArraySetAll[T any](array memcore.MarkRaw, v T) {
 		*(*T)(ptr) = v
 	})
 	arrayIncrementVersion[T](array)
+}
+
+/*
+ArraySetFromSlice copies all elements from a Go slice into the array, starting at index 0.
+
+This function is a convenience wrapper around ArraySetFromSliceRange that copies the entire
+slice (from index 0 to len(slice)) into the array starting at index 0. The slice and array
+must have the same element type, and bounds are validated before copying.
+
+Use cases:
+- Initializing arrays from Go slice data
+- Bulk data transfer from Go slices to manually managed memory
+- Efficient data migration from GC-managed to non-GC memory
+- Populating arrays from external data sources (files, network, etc.)
+
+Time complexity: O(n) - where n is len(slice) (number of elements copied)
+Space complexity: O(1) - only local variables used, no allocations
+
+Prerequisites:
+- array must point to a valid Array instance of type T
+- array must live in memory managed by memcore
+- len(slice) must not exceed array capacity
+
+Edge cases:
+- Returns error if len(slice) exceeds array capacity
+- Empty slice is valid and performs no copy
+- If len(slice) < capacity, only the first len(slice) elements are copied; remaining elements unchanged
+- Increments array version after successful copy
+
+Additional notes:
+- This function works with both contiguous and non-contiguous array layouts
+- The copy operation uses efficient bulk memory move operations (memmove)
+- The array's version is incremented to indicate modification
+- Source slice is not modified
+- Internally delegates to ArraySetFromSliceRange
+*/
+//go:inline
+func ArraySetFromSlice[T any](array memcore.MarkRaw, slice []T) error {
+	return ArraySetFromSliceRange(array, slice, 0, uint64(len(slice)), 0)
+}
+
+/*
+ArraySetFromSliceUnsafe copies all elements from a Go slice into the array, starting at index 0.
+It performs no bounds checks, so callers must ensure the slice length does not exceed array capacity.
+
+This function is a convenience wrapper around ArraySetFromSliceRangeUnsafe that copies the entire
+slice (from index 0 to len(slice)) into the array starting at index 0. The slice and array must
+have the same element type. No validation is performed.
+
+Use cases:
+- High-performance hot paths where bounds are guaranteed by the caller
+- Bulk data transfer in tight loops with pre-validated data
+- Performance-critical initialization code
+- Internal operations where safety is guaranteed by design
+
+Time complexity: O(n) - where n is len(slice) (number of elements copied)
+Space complexity: O(1) - only local variables used, no allocations
+
+Prerequisites:
+- array must point to a valid Array instance of type T
+- array must live in memory managed by memcore
+- len(slice) must not exceed array capacity (caller must validate)
+
+Edge cases:
+- No validation is performed; slice length exceeding capacity may cause memory corruption
+- Empty slice is valid and performs no copy
+- If len(slice) < capacity, only the first len(slice) elements are copied; remaining elements unchanged
+- Increments array version after copy
+
+Additional notes:
+- This function works with both contiguous and non-contiguous array layouts
+- The copy operation uses efficient bulk memory move operations (memmove)
+- The array's version is incremented to indicate modification
+- Source slice is not modified
+- Internally delegates to ArraySetFromSliceRangeUnsafe
+- Caller is responsible for all bounds checking
+*/
+//go:nosplit
+//go:inline
+func ArraySetFromSliceUnsafe[T any](array memcore.MarkRaw, slice []T) {
+	ArraySetFromSliceRangeUnsafe(array, slice, 0, uint64(len(slice)), 0)
 }
 
 // ArrayZeroAll sets all values within the array to its zero value.
