@@ -268,6 +268,43 @@ func VectorInitializeWithSeparatedHeaderAndData[T foundation.Numeric](headerAddr
 }
 
 /*
+VectorUpdateDataAddrOffset updates the data address offset of a vector to point to a new data location.
+
+This function wraps ArrayUpdateDataAddrOffset for numeric types, allowing rebinding a vector header
+to a different data region without reinitializing the entire vector. This is useful for cursor-based
+iteration where a single vector header is reused and its data pointer is updated for each element.
+
+Use cases:
+- Cursor-based iteration with reusable vector headers
+- Rebinding vectors to different data regions
+- Efficient sequential access patterns
+- Avoiding header reallocation in tight loops
+
+Time complexity: O(1) - single field update
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- vectorAddr must point to a valid Vector instance
+- dataAddr must point to a valid memory address for the data region
+- The data region must have sufficient capacity for the vector's capacity
+- Both addresses must be within memory managed by memcore
+
+Edge cases:
+- The offset can be negative if data is located before the header in memory
+- No validation is performed on data capacity or alignment
+- The vector's capacity and itemSize remain unchanged
+
+Additional notes:
+- This function only updates the dataAddrOffset field, preserving all other vector metadata
+- Useful for cursor-based iteration where the header is reused and data pointer is updated
+- Wraps ArrayUpdateDataAddrOffset for numeric types
+- Type safety is maintained through the generic parameter T
+*/
+func VectorUpdateDataAddrOffset[T foundation.Numeric](vectorAddr memcore.MarkRaw, dataAddr memcore.MarkRaw) {
+	ArrayUpdateDataAddrOffset[T](vectorAddr, dataAddr)
+}
+
+/*
 VectorInitializeFrom initializes a new vector at vectorAddr with the contents of the source vector.
 
 This function wraps ArrayInitializeFrom for numeric types, creating a new vector and copying all

@@ -1605,6 +1605,51 @@ func arrayIsContiguous[T any](instance *Array[T]) bool {
 	return instance.dataAddrOffset == uintptr(headerSize)
 }
 
+/*
+ArrayUpdateDataAddrOffset updates the data address offset of an array to point to a new data location.
+
+This function allows rebinding an array header to a different data region without reinitializing
+the entire array. The offset is calculated as the difference between the new data address and
+the header address, enabling efficient cursor-based iteration where a single header is reused
+and its data pointer is updated for each element.
+
+Use cases:
+- Cursor-based iteration with reusable array headers
+- Rebinding arrays to different data regions
+- Efficient sequential access patterns
+- Avoiding header reallocation in tight loops
+
+Time complexity: O(1) - single field update
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- arrayAddr must point to a valid Array instance
+- dataAddr must point to a valid memory address for the data region
+- The data region must have sufficient capacity for the array's capacity
+- Both addresses must be within memory managed by memcore
+
+Edge cases:
+- The offset can be negative if data is located before the header in memory
+- No validation is performed on data capacity or alignment
+- The array's capacity and itemSize remain unchanged
+
+Additional notes:
+- This function only updates the dataAddrOffset field, preserving all other array metadata
+- Useful for cursor-based iteration where the header is reused and data pointer is updated
+- The offset calculation follows the same pattern as ArrayInitializeWithSeparatedHeaderAndData
+- Type safety is maintained through the generic parameter T
+*/
+func ArrayUpdateDataAddrOffset[T any](arrayAddr memcore.MarkRaw, dataAddr memcore.MarkRaw) {
+	arrayPtr := memcore.MemcoreMarkDereferenceObject[Array[T]](arrayAddr)
+
+	headerPtr := uintptr(unsafe.Pointer(arrayPtr))
+	dataPtr := uintptr(memcore.MemcoreMarkDereference(dataAddr))
+
+	// Calculate offset: dataPtr - headerPtr so that headerPtr + offset = dataPtr
+	dataAddrOffset := dataPtr - headerPtr
+	arrayPtr.dataAddrOffset = dataAddrOffset
+}
+
 // ArrayVersionGet returns the current version of the array.
 //
 // Version increments on every modification to the array data, allowing cache invalidation
