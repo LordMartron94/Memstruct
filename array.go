@@ -143,6 +143,77 @@ func ArrayRequiredAlignmentGet[T any]() uint64 {
 	return max(memcore.AlignOf[T](), memcore.AlignOf[Array[T]]())
 }
 
+/*
+ArrayDataRequiredBytesGet returns the number of bytes required to store the data region
+of an array with the specified capacity, excluding the header structure.
+
+This function calculates the size of the data region only (capacity * sizeof(T)), which
+is useful when allocating memory separately for the header and data regions, or when
+calculating memory requirements for non-contiguous memory layouts.
+
+Use cases:
+- Calculating memory requirements for separated header/data allocations
+- Memory pool implementations that store headers separately
+- Custom allocators that need precise data region size information
+- Memory layout planning and optimization for data-only regions
+
+Time complexity: O(1) - simple arithmetic operation
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- Type T must be a valid Go type
+- capacity must be a valid non-negative integer
+
+Edge cases:
+- Returns 0 if capacity is 0 (no data region needed)
+- Does not include header size (use ArrayHeaderRequiredBytesGet for header size)
+- Does not account for alignment padding (use ArrayDataRequiredAlignmentGet for alignment)
+
+Additional notes:
+- The returned size is the exact size needed for capacity elements of type T
+- For total memory requirements including header, use ArrayRequiredBytesGet
+- This function is useful when header and data are allocated separately
+*/
+func ArrayDataRequiredBytesGet[T any](capacity uint64) uint64 {
+	itemSize := memcore.SizeOf[T]()
+	return itemSize * capacity
+}
+
+/*
+ArrayDataRequiredAlignmentGet returns the required memory alignment for the Array data region.
+
+The alignment requirement ensures that the data region is placed at a memory address that is
+a multiple of the returned value. This is the alignment requirement of the element type T,
+ensuring optimal memory access patterns and cache efficiency for data elements.
+
+Use cases:
+- Memory allocation alignment calculations for data-only regions
+- Memory pool implementations requiring proper data alignment
+- Custom allocators that need data region alignment information
+- SIMD operations requiring specific data alignment
+- Cache-optimized memory layout planning for data regions
+
+Time complexity: O(1) - compile-time constant evaluation
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- Type T must be a valid Go type
+
+Edge cases:
+- Returns the alignment requirement of type T (the element type)
+- Alignment values are always powers of two
+- Zero alignment is never returned (minimum alignment is 1)
+
+Additional notes:
+- The alignment is determined by the element type T
+- This ensures that all data elements are properly aligned for efficient access
+- For total alignment requirements including header, use ArrayRequiredAlignmentGet
+- This function is useful when header and data are allocated separately
+*/
+func ArrayDataRequiredAlignmentGet[T any]() uint64 {
+	return memcore.AlignOf[T]()
+}
+
 // Array is a custom array implementation built on top of memcore.
 type Array[T any] struct {
 	dataAddrOffset uintptr
@@ -248,14 +319,14 @@ Additional notes:
 func ArrayInitializeWithSeparatedHeaderAndData[T any](headerAddr memcore.MarkRaw, dataAddr memcore.MarkRaw, capacity uint64) {
 	itemSize := memcore.SizeOf[T]()
 	arrayPtr := memcore.MemcoreMarkDereferenceObject[Array[T]](headerAddr)
-	
+
 	headerPtr := uintptr(unsafe.Pointer(arrayPtr))
 	dataPtr := uintptr(memcore.MemcoreMarkDereference(dataAddr))
-	
+
 	// Calculate offset: dataPtr - headerPtr so that headerPtr + offset = dataPtr
 	// Previous calculation was reversed (headerPtr - dataPtr), which was incorrect
 	dataAddrOffset := dataPtr - headerPtr
-	
+
 	*arrayPtr = Array[T]{
 		dataAddrOffset: dataAddrOffset,
 		capacity:       capacity,
@@ -317,19 +388,19 @@ func ArraySnapshotCreate[T any](dest memcore.MarkRaw, instance memcore.MarkRaw) 
 	if arrayIsContiguous(arrayPtr) {
 		// Contiguous layout: copy header + data as single block
 		totalSize := ArrayRequiredBytesGet[T](arrayPtr.capacity)
-	srcAddr := memcore.MemcoreMarkDereference(instance)
-	dstAddr := memcore.MemcoreMarkDereference(dest)
-	memcore.MemoryMoveNoHeapPointers(dstAddr, srcAddr, uintptr(totalSize))
+		srcAddr := memcore.MemcoreMarkDereference(instance)
+		dstAddr := memcore.MemcoreMarkDereference(dest)
+		memcore.MemoryMoveNoHeapPointers(dstAddr, srcAddr, uintptr(totalSize))
 	} else {
 		// Non-contiguous layout: copy header and data separately
 		headerSize := memcore.SizeOf[Array[T]]()
 		dataSize := uintptr(arrayPtr.capacity) * arrayPtr.itemSize
-		
+
 		// Copy header
 		srcHeaderAddr := memcore.MemcoreMarkDereference(instance)
 		dstHeaderAddr := memcore.MemcoreMarkDereference(dest)
 		memcore.MemoryMoveNoHeapPointers(dstHeaderAddr, srcHeaderAddr, uintptr(headerSize))
-		
+
 		// Copy data (preserve the same offset in destination)
 		srcBaseAddr := memcore.MemcoreMarkDereference(instance)
 		dstBaseAddr := memcore.MemcoreMarkDereference(dest)
@@ -392,20 +463,20 @@ func ArraySnapshotRestore[T any](dest, src memcore.MarkRaw) error {
 
 	if arrayIsContiguous(srcHeader) {
 		// Contiguous layout: copy header + data as single block
-	totalBytes := ArrayRequiredBytesGet[T](dstHeader.capacity)
-	dstAddr := memcore.MemcoreMarkDereferenceUnsafe(dest)
-	srcAddr := memcore.MemcoreMarkDereferenceUnsafe(src)
-	memcore.MemoryMoveNoHeapPointers(dstAddr, srcAddr, uintptr(totalBytes))
+		totalBytes := ArrayRequiredBytesGet[T](dstHeader.capacity)
+		dstAddr := memcore.MemcoreMarkDereferenceUnsafe(dest)
+		srcAddr := memcore.MemcoreMarkDereferenceUnsafe(src)
+		memcore.MemoryMoveNoHeapPointers(dstAddr, srcAddr, uintptr(totalBytes))
 	} else {
 		// Non-contiguous layout: copy header and data separately
 		headerSize := memcore.SizeOf[Array[T]]()
 		dataSize := uintptr(srcHeader.capacity) * srcHeader.itemSize
-		
+
 		// Copy header
 		dstHeaderAddr := memcore.MemcoreMarkDereferenceUnsafe(dest)
 		srcHeaderAddr := memcore.MemcoreMarkDereferenceUnsafe(src)
 		memcore.MemoryMoveNoHeapPointers(dstHeaderAddr, srcHeaderAddr, uintptr(headerSize))
-		
+
 		// Copy data (preserve the same offset in destination as source)
 		dstBaseAddr := memcore.MemcoreMarkDereferenceUnsafe(dest)
 		srcBaseAddr := memcore.MemcoreMarkDereferenceUnsafe(src)
@@ -441,10 +512,10 @@ Prerequisites:
 - The destination array's data region must be valid (if dataAddrOffset is set)
 
 Edge cases:
-- Only copies header fields; data elements are not touched
-- The destination array's dataAddrOffset will match the source, which may point to invalid
-  data if the destination's data region is not properly set up
-- Version number is copied, which may not reflect the actual state of destination data
+  - Only copies header fields; data elements are not touched
+  - The destination array's dataAddrOffset will match the source, which may point to invalid
+    data if the destination's data region is not properly set up
+  - Version number is copied, which may not reflect the actual state of destination data
 
 Additional notes:
 - This function does not validate that the destination's data region is valid

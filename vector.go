@@ -94,6 +94,80 @@ func VectorHeaderRequiredAlignmentGet[T foundation.Numeric]() uint64 {
 	return ArrayHeaderRequiredAlignmentGet[T]()
 }
 
+/*
+VectorDataRequiredBytesGet returns the number of bytes required to store the data region
+of a vector with the specified capacity, excluding the header structure.
+
+This function wraps ArrayDataRequiredBytesGet for numeric types, calculating the size of
+the data region only (capacity * sizeof(T)). It is useful when allocating memory separately
+for the header and data regions, or when calculating memory requirements for non-contiguous
+memory layouts.
+
+Use cases:
+- Calculating memory requirements for separated header/data allocations
+- Memory pool implementations that store headers separately
+- Custom allocators that need precise data region size information
+- Memory layout planning and optimization for data-only regions
+
+Time complexity: O(1) - simple arithmetic operation
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- Type T must be a numeric type (foundation.Numeric)
+- capacity must be a valid non-negative integer
+
+Edge cases:
+- Returns 0 if capacity is 0 (no data region needed)
+- Does not include header size (use VectorHeaderRequiredBytesGet for header size)
+- Does not account for alignment padding (use VectorDataRequiredAlignmentGet for alignment)
+
+Additional notes:
+- The returned size is the exact size needed for capacity elements of type T
+- For total memory requirements including header, use VectorRequiredBytesGet
+- This function is useful when header and data are allocated separately
+- Internally delegates to ArrayDataRequiredBytesGet
+*/
+func VectorDataRequiredBytesGet[T foundation.Numeric](capacity uint64) uint64 {
+	return ArrayDataRequiredBytesGet[T](capacity)
+}
+
+/*
+VectorDataRequiredAlignmentGet returns the required memory alignment for the Vector data region.
+
+This function wraps ArrayDataRequiredAlignmentGet for numeric types. The alignment requirement
+ensures that the data region is placed at a memory address that is a multiple of the returned
+value. This is the alignment requirement of the element type T, ensuring optimal memory access
+patterns and cache efficiency for data elements.
+
+Use cases:
+- Memory allocation alignment calculations for data-only regions
+- Memory pool implementations requiring proper data alignment
+- Custom allocators that need data region alignment information
+- SIMD operations requiring specific data alignment
+- Cache-optimized memory layout planning for data regions
+
+Time complexity: O(1) - compile-time constant evaluation
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- Type T must be a numeric type (foundation.Numeric)
+
+Edge cases:
+- Returns the alignment requirement of type T (the element type)
+- Alignment values are always powers of two
+- Zero alignment is never returned (minimum alignment is 1)
+
+Additional notes:
+- The alignment is determined by the element type T
+- This ensures that all data elements are properly aligned for efficient access
+- For total alignment requirements including header, use VectorRequiredAlignmentGet
+- This function is useful when header and data are allocated separately
+- Internally delegates to ArrayDataRequiredAlignmentGet
+*/
+func VectorDataRequiredAlignmentGet[T foundation.Numeric]() uint64 {
+	return ArrayDataRequiredAlignmentGet[T]()
+}
+
 func (v *Vector[T]) String() string {
 	if v == nil {
 		return "<nil Vector>"
