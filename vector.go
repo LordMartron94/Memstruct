@@ -25,6 +25,75 @@ func VectorRequiredAlignmentGet[T foundation.Numeric]() uint64 {
 	return ArrayRequiredAlignmentGet[T]()
 }
 
+/*
+VectorHeaderRequiredBytesGet returns the number of bytes required to store the Vector header structure.
+
+This function wraps ArrayHeaderRequiredBytesGet for numeric types, calculating the size of the
+Vector header only, excluding the data region. It is useful when allocating memory separately
+for the header and data regions, or when calculating memory requirements for non-contiguous
+memory layouts.
+
+Use cases:
+- Calculating memory requirements for separated header/data allocations
+- Memory pool implementations that store headers separately
+- Custom allocators that need precise header size information
+- Memory layout planning and optimization
+
+Time complexity: O(1) - compile-time constant evaluation
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- Type T must be a numeric type (foundation.Numeric)
+
+Edge cases:
+- Returns the size of the Vector struct itself, which includes metadata fields
+- Does not include padding or alignment considerations (use VectorHeaderRequiredAlignmentGet for alignment)
+- Size is determined at compile time based on the Vector struct definition
+
+Additional notes:
+- The returned size is the exact size of the Vector header structure
+- For total memory requirements including data, use VectorRequiredBytesGet
+- Internally delegates to ArrayHeaderRequiredBytesGet
+*/
+func VectorHeaderRequiredBytesGet[T foundation.Numeric]() uint64 {
+	return ArrayHeaderRequiredBytesGet[T]()
+}
+
+/*
+VectorHeaderRequiredAlignmentGet returns the required memory alignment for the Vector header structure.
+
+This function wraps ArrayHeaderRequiredAlignmentGet for numeric types. The alignment requirement
+ensures that the Vector header is placed at a memory address that is a multiple of the returned
+value. This is typically the alignment requirement of the element type T, which ensures optimal
+memory access patterns and cache efficiency.
+
+Use cases:
+- Memory allocation alignment calculations
+- Memory pool implementations requiring proper alignment
+- Custom allocators that need alignment information
+- Cache-optimized memory layout planning
+
+Time complexity: O(1) - compile-time constant evaluation
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- Type T must be a numeric type (foundation.Numeric)
+
+Edge cases:
+- Returns the alignment requirement of type T, which matches the header's alignment needs
+- Alignment values are always powers of two
+- Zero alignment is never returned (minimum alignment is 1)
+
+Additional notes:
+- The alignment is determined by the element type T, not the Vector struct itself
+- This ensures that when the header is properly aligned, subsequent data access is also aligned
+- For total alignment requirements including data, use VectorRequiredAlignmentGet
+- Internally delegates to ArrayHeaderRequiredAlignmentGet
+*/
+func VectorHeaderRequiredAlignmentGet[T foundation.Numeric]() uint64 {
+	return ArrayHeaderRequiredAlignmentGet[T]()
+}
+
 func (v *Vector[T]) String() string {
 	if v == nil {
 		return "<nil Vector>"
@@ -48,51 +117,321 @@ func (v *Vector[T]) String() string {
 	return sb.String()
 }
 
-// VectorInitializeAt initializes an instance of an vector for type T at a specific memory address.
-// Ensure the address is properly aligned and has the right size.
-//
-// ⚠️ capacity is in elements, not bytes.
+/*
+VectorInitializeAt initializes a vector instance for numeric type T at a specific memory address,
+assuming a contiguous memory layout where the header is immediately followed by the data region.
+
+This function wraps ArrayInitializeAt for numeric types, setting up the vector header and calculating
+the data address offset based on the assumption that data immediately follows the header in memory.
+The memory at vectorAddr must be large enough to accommodate both the header and the data region.
+
+Use cases:
+- Standard vector initialization with contiguous memory layout
+- Memory pool implementations with pre-allocated contiguous blocks
+- Cache-optimized data structures requiring contiguous memory
+- Simple vector creation when memory layout is not a concern
+
+Time complexity: O(1) - constant time initialization
+Space complexity: O(1) - only local variables used
+
+Prerequisites:
+- vectorAddr must point to a valid, properly aligned memory address
+- The memory region must be large enough to hold header + capacity*sizeof(T) bytes
+- Memory must be properly aligned according to VectorRequiredAlignmentGet
+- capacity is specified in elements, not bytes
+
+Edge cases:
+- capacity of 0 is valid and creates a vector with no data region
+- The data region starts immediately after the header (offset equals header size)
+- Version is initialized to 1
+
+Additional notes:
+- This function assumes contiguous memory layout (header immediately followed by data)
+- For non-contiguous layouts, use VectorInitializeWithSeparatedHeaderAndData
+- The function registers a type-specific movement function for efficient element copying
+- Internally delegates to ArrayInitializeAt
+*/
 func VectorInitializeAt[T foundation.Numeric](vectorAddr memcore.MarkRaw, capacity uint64) {
 	ArrayInitializeAt[T](vectorAddr, capacity)
 }
 
-// VectorInitializeFrom initializes a new vector at vectorAddr with the contents of src.
-// Capacity must be >= src capacity.
+/*
+VectorInitializeWithSeparatedHeaderAndData initializes a vector instance with the header and data
+stored at separate, non-contiguous memory addresses.
+
+This function wraps ArrayInitializeWithSeparatedHeaderAndData for numeric types, allowing vectors
+to be initialized with flexible memory layouts where the header and data region are allocated
+in different memory locations.
+
+Use cases:
+- Memory pools where headers are stored in a separate metadata region
+- Custom allocators that manage header and data allocations independently
+- Interleaved data structures where multiple headers share a common data region
+- Memory-constrained environments requiring precise control over memory layout
+
+Time complexity: O(1) - constant time initialization
+Space complexity: O(1) - only local variables used
+
+Prerequisites:
+- headerAddr must point to a valid, properly aligned memory address for the Vector header
+- dataAddr must point to a valid, properly aligned memory address for the data region
+- The data region must have sufficient capacity for the specified number of elements
+- Both addresses must be within memory managed by memcore
+
+Edge cases:
+- dataAddr can be located before or after headerAddr in memory (offset can be negative or positive)
+- The offset is calculated as the difference between header and data addresses
+- This method allows non-contiguous memory layouts, unlike VectorInitializeAt which assumes contiguous layout
+
+Additional notes:
+- The dataAddrOffset field stores the byte offset from the header address to the data address
+- This offset can be negative if data is located before the header in memory
+- After initialization, all standard Vector operations work identically regardless of memory layout
+- Internally delegates to ArrayInitializeWithSeparatedHeaderAndData
+*/
+func VectorInitializeWithSeparatedHeaderAndData[T foundation.Numeric](headerAddr memcore.MarkRaw, dataAddr memcore.MarkRaw, capacity uint64) {
+	ArrayInitializeWithSeparatedHeaderAndData[T](headerAddr, dataAddr, capacity)
+}
+
+/*
+VectorInitializeFrom initializes a new vector at vectorAddr with the contents of the source vector.
+
+This function wraps ArrayInitializeFrom for numeric types, creating a new vector and copying all
+elements from the source vector into it. The new vector must have capacity greater than or equal
+to the source vector's capacity.
+
+Use cases:
+- Creating a vector from an existing vector with different capacity
+- Vector duplication and cloning operations
+- Resizing vectors while preserving data
+- Vector migration to new memory locations
+
+Time complexity: O(n) - where n is the source vector capacity (initialization + copy)
+Space complexity: O(1) - only local variables used (destination memory must be pre-allocated)
+
+Prerequisites:
+- vectorAddr must point to a valid, properly aligned memory address
+- src must point to a valid Vector instance of the same type T
+- newCapacity must be >= source vector capacity
+- Both vectors must live in memory managed by memcore
+
+Edge cases:
+- Returns error if newCapacity is less than source capacity
+- The new vector will have the same element values as the source
+- Version is initialized to 1 in the new vector
+
+Additional notes:
+- This function first initializes the destination vector, then copies all elements
+- The source vector is not modified
+- Internally delegates to ArrayInitializeFrom
+*/
 func VectorInitializeFrom[T foundation.Numeric](vectorAddr memcore.MarkRaw, src memcore.MarkRaw, newCapacity uint64) error {
 	return ArrayInitializeFrom[T](vectorAddr, src, newCapacity)
 }
 
-// VectorSnapshotCreate creates a deep copy of an vector at a new memory location
-// defined by the destination pointer (which points to the start of the new vector header).
-// It copies both the header and the data that follow it, maintaining the same relative layout.
+/*
+VectorSnapshotCreate creates a deep copy of a vector at a new memory location, preserving
+the memory layout (contiguous or non-contiguous) of the source vector.
+
+This function wraps ArraySnapshotCreate for numeric types, creating a complete snapshot of
+the vector by copying both the header and data region. For contiguous vectors, it copies
+the header and data as a single block. For non-contiguous vectors, it copies the header
+and data separately to maintain the same memory layout in the destination.
+
+Use cases:
+- Creating checkpoint/restore points for state management
+- Deep copying vectors for backup purposes
+- Implementing undo/redo functionality
+- State serialization and deserialization
+
+Time complexity: O(n) - where n is the total size of header + data region
+Space complexity: O(1) - only local variables used (destination memory must be pre-allocated)
+
+Prerequisites:
+- dest must point to a valid, properly aligned memory address
+- The destination memory must be large enough to accommodate the vector (header + data)
+- Both dest and instance must be valid Vector instances of the same type T
+- Both vectors must live in memory managed by memcore
+
+Edge cases:
+- Handles both contiguous and non-contiguous memory layouts automatically
+- Preserves the exact memory layout of the source vector
+- Returns dest on success
+- The destination vector will have the same capacity and memory layout as the source
+
+Additional notes:
+- This function automatically detects whether the source vector uses contiguous or non-contiguous layout
+- For contiguous vectors, copies header + data as a single block for efficiency
+- For non-contiguous vectors, copies header and data separately to preserve layout
+- The version number is copied but not reset (snapshot preserves state)
+- Internally delegates to ArraySnapshotCreate
+*/
 func VectorSnapshotCreate[T foundation.Numeric](dest memcore.MarkRaw, instance memcore.MarkRaw) memcore.MarkRaw {
 	return ArraySnapshotCreate[T](dest, instance)
 }
 
-// VectorSnapshotRestore replaces the entire memory block of one vector
-// (header + data) with that of another vector of the same type and capacity.
-// Both vectors must live in manual memory managed by memcore.
+/*
+VectorSnapshotRestore replaces the entire memory content of one vector with that of another
+vector, preserving the memory layout of both source and destination.
+
+This function wraps ArraySnapshotRestore for numeric types, restoring a vector from a previously
+created snapshot. It copies both the header and data region from the source to the destination.
+The function automatically handles both contiguous and non-contiguous memory layouts, ensuring
+the destination layout matches the source layout.
+
+Use cases:
+- Restoring vector state from checkpoints
+- Implementing undo/redo functionality
+- State deserialization from snapshots
+- Rollback operations in transactional systems
+
+Time complexity: O(n) - where n is the total size of header + data region
+Space complexity: O(1) - only local variables used
+
+Prerequisites:
+- dest and src must point to valid, properly aligned memory addresses
+- Both vectors must have the same capacity
+- Both vectors must be of the same type T
+- Both vectors must live in memory managed by memcore
+- The destination memory must be large enough to accommodate the source vector
+
+Edge cases:
+- Returns nil error if dest == src (no-op)
+- Returns error if capacities do not match
+- Handles both contiguous and non-contiguous memory layouts automatically
+- Preserves the exact memory layout of the source vector in the destination
+
+Additional notes:
+- This function automatically detects whether vectors use contiguous or non-contiguous layout
+- For contiguous vectors, copies header + data as a single block for efficiency
+- For non-contiguous vectors, copies header and data separately to preserve layout
+- The destination layout will match the source layout after restoration
+- Internally delegates to ArraySnapshotRestore
+*/
 func VectorSnapshotRestore[T foundation.Numeric](dest, src memcore.MarkRaw) error {
 	return ArraySnapshotRestore[T](dest, src)
 }
 
-// VectorHeaderClone clones the header to the vector data.
-// It will not move memory at all.
+/*
+VectorHeaderClone copies only the Vector header structure from source to destination,
+without copying any data elements.
+
+This function wraps ArrayHeaderClone for numeric types, cloning the metadata (capacity,
+dataAddrOffset, itemSize, version, setFnID) from one vector to another, but does not
+copy the actual data elements. This is useful when you want to initialize a new vector
+with the same metadata as an existing vector, but with different or uninitialized data.
+
+Use cases:
+- Initializing vectors with the same metadata configuration
+- Resetting vector metadata while preserving data
+- Copying vector configuration for template-based initialization
+- Metadata synchronization between vectors
+
+Time complexity: O(1) - only struct field copy operations
+Space complexity: O(1) - only local variables used
+
+Prerequisites:
+- dest and src must point to valid Vector instances of the same type T
+- Both vectors must live in memory managed by memcore
+- The destination vector's data region must be valid (if dataAddrOffset is set)
+
+Edge cases:
+- Only copies header fields; data elements are not touched
+- The destination vector's dataAddrOffset will match the source, which may point to invalid
+  data if the destination's data region is not properly set up
+- Version number is copied, which may not reflect the actual state of destination data
+
+Additional notes:
+- This function does not validate that the destination's data region is valid
+- After cloning, the destination vector will have the same capacity and metadata as source
+- The data region is not copied or validated; caller must ensure data region is valid
+- Useful for initializing vectors with the same configuration but different data
+- Internally delegates to ArrayHeaderClone
+*/
 func VectorHeaderClone[T foundation.Numeric](dest, src memcore.MarkRaw) {
 	ArrayHeaderClone[T](dest, src)
 }
 
-// VectorCopyFrom copies the entire contents of src vector into dest vector,
-// starting at destStartIdx. Both arrays must have the same element type T.
-// Capacity must allow the copy, else an error is returned.
-//
-// Example: copy src[0:srcCap] → dest[destStartIdx : destStartIdx+srcCap]
+/*
+VectorCopyFrom copies the entire contents of the source vector into the destination vector,
+starting at the specified destination index.
+
+This function wraps ArrayCopyFrom for numeric types, copying all elements from the source
+vector (from index 0 to capacity-1) into the destination vector starting at destStartIdx.
+Both vectors must have the same element type, and the destination must have sufficient
+capacity to accommodate the copy operation.
+
+Use cases:
+- Copying vector contents to a different location
+- Merging vectors by copying into a larger destination
+- Initializing vectors from existing vector data
+- Vector migration and data movement operations
+
+Time complexity: O(n) - where n is the source vector capacity (number of elements copied)
+Space complexity: O(1) - only local variables used
+
+Prerequisites:
+- dest and src must point to valid Vector instances of the same type T
+- Both vectors must live in memory managed by memcore
+- destStartIdx + srcCapacity must not exceed destCapacity
+- Both vectors must have the same element type T
+
+Edge cases:
+- Returns error if destination capacity is insufficient
+- Copies all elements from source (entire capacity, not just used elements)
+- Example: copy src[0:srcCap] → dest[destStartIdx : destStartIdx+srcCap]
+- Increments destination vector version after successful copy
+
+Additional notes:
+- This function works with both contiguous and non-contiguous vector layouts
+- The copy operation uses efficient memory move operations
+- The destination vector's version is incremented to indicate modification
+- Source vector version is not modified
+- Internally delegates to ArrayCopyFrom
+*/
 func VectorCopyFrom[T foundation.Numeric](dest memcore.MarkRaw, src memcore.MarkRaw, destStartIdx uint64) error {
 	return ArrayCopyFrom[T](dest, src, destStartIdx)
 }
 
-// VectorCopyFromRange copies src[from:to) into dest starting at destStartIdx.
-// Bounds are checked; both arrays must have same type T.
+/*
+VectorCopyFromRange copies a contiguous range of elements from the source vector into the
+destination vector, starting at the specified destination index.
+
+This function wraps ArrayCopyFromRange for numeric types, copying elements from the source
+vector in the range [from, to) (from inclusive, to exclusive) into the destination vector
+starting at destStartIdx. Both vectors must have the same element type, and bounds are
+validated before copying.
+
+Use cases:
+- Copying a subset of vector elements to another location
+- Extracting and moving specific ranges of data
+- Partial vector merging operations
+- Selective data migration between vectors
+
+Time complexity: O(n) - where n is the number of elements in the range (to - from)
+Space complexity: O(1) - only local variables used
+
+Prerequisites:
+- dest and src must point to valid Vector instances of the same type T
+- Both vectors must live in memory managed by memcore
+- from must be less than to (range must be valid)
+- to must not exceed source vector capacity
+- destStartIdx + (to - from) must not exceed destination vector capacity
+
+Edge cases:
+- Returns error if from >= to (invalid range)
+- Returns error if to exceeds source capacity
+- Returns error if destination capacity is insufficient
+- The range [from, to) is half-open (from inclusive, to exclusive)
+- Increments destination vector version after successful copy
+
+Additional notes:
+- This function works with both contiguous and non-contiguous vector layouts
+- The copy operation uses efficient memory move operations
+- The destination vector's version is incremented to indicate modification
+- Source vector version is not modified
+- Internally delegates to ArrayCopyFromRange
+*/
 func VectorCopyFromRange[T foundation.Numeric](
 	dest memcore.MarkRaw,
 	src memcore.MarkRaw,
@@ -101,16 +440,73 @@ func VectorCopyFromRange[T foundation.Numeric](
 	return ArrayCopyFromRange[T](dest, src, from, to, destStartIdx)
 }
 
-// VectorHeaderSizeBytesGet returns the required bytes for the Vector header.
-//
-//go:inline
+/*
+VectorHeaderSizeBytesGet returns the number of bytes required to store the Vector header structure.
+
+This function wraps ArrayHeaderSizeBytesGet for numeric types, calculating the size of the
+Vector header only, excluding the data region. It is useful when allocating memory separately
+for the header and data regions, or when calculating memory requirements for non-contiguous
+memory layouts.
+
+Use cases:
+- Calculating memory requirements for separated header/data allocations
+- Memory pool implementations that store headers separately
+- Custom allocators that need precise header size information
+- Memory layout planning and optimization
+
+Time complexity: O(1) - compile-time constant evaluation
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- Type T must be a numeric type (foundation.Numeric)
+
+Edge cases:
+- Returns the size of the Vector struct itself, which includes metadata fields
+- Does not include padding or alignment considerations (use VectorHeaderAlignmentGet for alignment)
+- Size is determined at compile time based on the Vector struct definition
+
+Additional notes:
+- The returned size is the exact size of the Vector header structure
+- For total memory requirements including data, use VectorRequiredBytesGet
+- This is an alias for VectorHeaderRequiredBytesGet (both functions return the same value)
+- Internally delegates to ArrayHeaderSizeBytesGet
+*/
 func VectorHeaderSizeBytesGet[T foundation.Numeric]() uint64 {
 	return ArrayHeaderSizeBytesGet[T]()
 }
 
-// VectorHeaderAlignmentGet returns the required alignment for the Vector header.
-//
-//go:inline
+/*
+VectorHeaderAlignmentGet returns the required memory alignment for the Vector header structure.
+
+This function wraps ArrayHeaderAlignmentGet for numeric types. The alignment requirement ensures
+that the Vector header is placed at a memory address that is a multiple of the returned value.
+This is typically the alignment requirement of the element type T, which ensures optimal memory
+access patterns and cache efficiency.
+
+Use cases:
+- Memory allocation alignment calculations
+- Memory pool implementations requiring proper alignment
+- Custom allocators that need alignment information
+- Cache-optimized memory layout planning
+
+Time complexity: O(1) - compile-time constant evaluation
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- Type T must be a numeric type (foundation.Numeric)
+
+Edge cases:
+- Returns the alignment requirement of type T, which matches the header's alignment needs
+- Alignment values are always powers of two
+- Zero alignment is never returned (minimum alignment is 1)
+
+Additional notes:
+- The alignment is determined by the element type T, not the Vector struct itself
+- This ensures that when the header is properly aligned, subsequent data access is also aligned
+- For total alignment requirements including data, use VectorRequiredAlignmentGet
+- This is an alias for VectorHeaderRequiredAlignmentGet (both functions return the same value)
+- Internally delegates to ArrayHeaderAlignmentGet
+*/
 func VectorHeaderAlignmentGet[T foundation.Numeric]() uint64 {
 	return ArrayHeaderAlignmentGet[T]()
 }

@@ -6,12 +6,139 @@ import (
 	"unsafe"
 )
 
+/*
+ArrayHeaderRequiredBytesGet returns the number of bytes required to store the Array header structure.
+
+This function calculates the size of the Array header only, excluding the data region.
+It is useful when allocating memory separately for the header and data regions, or when
+calculating memory requirements for non-contiguous memory layouts.
+
+Use cases:
+- Calculating memory requirements for separated header/data allocations
+- Memory pool implementations that store headers separately
+- Custom allocators that need precise header size information
+- Memory layout planning and optimization
+
+Time complexity: O(1) - compile-time constant evaluation
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- Type T must be a valid Go type
+
+Edge cases:
+- Returns the size of the Array struct itself, which includes metadata fields
+- Does not include padding or alignment considerations (use ArrayHeaderRequiredAlignmentGet for alignment)
+- Size is determined at compile time based on the Array struct definition
+
+Additional notes:
+- The returned size is the exact size of the Array header structure
+- For total memory requirements including data, use ArrayRequiredBytesGet
+*/
+func ArrayHeaderRequiredBytesGet[T any]() uint64 {
+	headerSize := memcore.SizeOf[Array[T]]()
+	return headerSize
+}
+
+/*
+ArrayRequiredBytesGet returns the total number of bytes required for an array with the specified capacity,
+assuming a contiguous memory layout where the header is immediately followed by the data region.
+
+This function calculates the combined size of the Array header and the data region for a contiguous
+memory layout. For non-contiguous layouts (where header and data are separated), calculate header
+and data sizes separately using ArrayHeaderRequiredBytesGet and item size calculations.
+
+Use cases:
+- Calculating memory requirements for contiguous array allocations
+- Memory pool sizing and capacity planning
+- Allocator implementations that need total size information
+- Memory layout optimization for cache efficiency
+
+Time complexity: O(1) - simple arithmetic operations
+Space complexity: O(1) - only local variables used
+
+Prerequisites:
+- Type T must be a valid Go type
+- capacity must be a valid non-negative integer
+
+Edge cases:
+- Returns headerSize + itemSize*capacity for contiguous layouts
+- Does not account for alignment padding between header and data (handled by alignment requirements)
+- For non-contiguous layouts, this calculation is incorrect; use ArrayHeaderRequiredBytesGet separately
+
+Additional notes:
+- This function assumes contiguous memory layout (header immediately followed by data)
+- For separated header/data layouts, calculate sizes separately
+- The actual allocated size may need to account for alignment requirements (use ArrayRequiredAlignmentGet)
+*/
 func ArrayRequiredBytesGet[T any](capacity uint64) uint64 {
 	headerSize := memcore.SizeOf[Array[T]]()
 	itemSize := memcore.SizeOf[T]()
 	return headerSize + itemSize*capacity
 }
 
+/*
+ArrayHeaderRequiredAlignmentGet returns the required memory alignment for the Array header structure.
+
+The alignment requirement ensures that the Array header is placed at a memory address that is
+a multiple of the returned value. This is typically the alignment requirement of the element
+type T, which ensures optimal memory access patterns and cache efficiency.
+
+Use cases:
+- Memory allocation alignment calculations
+- Memory pool implementations requiring proper alignment
+- Custom allocators that need alignment information
+- Cache-optimized memory layout planning
+
+Time complexity: O(1) - compile-time constant evaluation
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- Type T must be a valid Go type
+
+Edge cases:
+- Returns the alignment requirement of type T, which matches the header's alignment needs
+- Alignment values are always powers of two
+- Zero alignment is never returned (minimum alignment is 1)
+
+Additional notes:
+- The alignment is determined by the element type T, not the Array struct itself
+- This ensures that when the header is properly aligned, subsequent data access is also aligned
+- For total alignment requirements including data, use ArrayRequiredAlignmentGet
+*/
+func ArrayHeaderRequiredAlignmentGet[T any]() uint64 {
+	return memcore.AlignOf[T]()
+}
+
+/*
+ArrayRequiredAlignmentGet returns the required memory alignment for an array allocation,
+accounting for both the header and data region alignment requirements.
+
+The returned alignment is the maximum of the element type alignment and the Array header
+alignment, ensuring that both the header and all data elements are properly aligned for
+optimal memory access patterns and cache efficiency.
+
+Use cases:
+- Memory allocation alignment calculations for contiguous arrays
+- Allocator implementations requiring proper alignment
+- Cache-optimized memory layout planning
+- SIMD operations requiring specific alignment
+
+Time complexity: O(1) - simple comparison operation
+Space complexity: O(1) - only local variables used
+
+Prerequisites:
+- Type T must be a valid Go type
+
+Edge cases:
+- Returns the maximum of element type alignment and Array header alignment
+- Alignment values are always powers of two
+- Minimum returned alignment is 1 (never zero)
+
+Additional notes:
+- This function assumes contiguous memory layout
+- The alignment ensures both header and data elements are properly aligned
+- For separated header/data layouts, use ArrayHeaderRequiredAlignmentGet for header alignment
+*/
 func ArrayRequiredAlignmentGet[T any]() uint64 {
 	return max(memcore.AlignOf[T](), memcore.AlignOf[Array[T]]())
 }
@@ -35,10 +162,39 @@ type ArrayView[T any] struct {
 	readonly         bool
 }
 
-// ArrayInitializeAt initializes an instance of an array for type T at a specific memory address.
-// Ensure the address is properly aligned and has the right size.
-//
-// ⚠️ capacity is in elements, not bytes.
+/*
+ArrayInitializeAt initializes an array instance for type T at a specific memory address,
+assuming a contiguous memory layout where the header is immediately followed by the data region.
+
+This function sets up the array header and calculates the data address offset based on the
+assumption that data immediately follows the header in memory. The memory at arrayAddr must
+be large enough to accommodate both the header and the data region.
+
+Use cases:
+- Standard array initialization with contiguous memory layout
+- Memory pool implementations with pre-allocated contiguous blocks
+- Cache-optimized data structures requiring contiguous memory
+- Simple array creation when memory layout is not a concern
+
+Time complexity: O(1) - constant time initialization
+Space complexity: O(1) - only local variables used
+
+Prerequisites:
+- arrayAddr must point to a valid, properly aligned memory address
+- The memory region must be large enough to hold header + capacity*sizeof(T) bytes
+- Memory must be properly aligned according to ArrayRequiredAlignmentGet
+- capacity is specified in elements, not bytes
+
+Edge cases:
+- capacity of 0 is valid and creates an array with no data region
+- The data region starts immediately after the header (offset equals header size)
+- Version is initialized to 1
+
+Additional notes:
+- This function assumes contiguous memory layout (header immediately followed by data)
+- For non-contiguous layouts, use ArrayInitializeWithSeparatedHeaderAndData
+- The function registers a type-specific movement function for efficient element copying
+*/
 func ArrayInitializeAt[T any](arrayAddr memcore.MarkRaw, capacity uint64) {
 	headerSize := memcore.SizeOf[Array[T]]()
 
@@ -56,6 +212,54 @@ func ArrayInitializeAt[T any](arrayAddr memcore.MarkRaw, capacity uint64) {
 	)
 }
 
+/*
+ArrayInitializeWithSeparatedHeaderAndData initializes an array instance with the header and data
+stored at separate, non-contiguous memory addresses.
+
+This function is used when the array header and data region are allocated in different memory
+locations, allowing for flexible memory layouts such as memory pools, custom allocators, or
+interleaved data structures where headers and data are stored separately.
+
+Use cases:
+- Memory pools where headers are stored in a separate metadata region
+- Custom allocators that manage header and data allocations independently
+- Interleaved data structures where multiple headers share a common data region
+- Memory-constrained environments requiring precise control over memory layout
+
+Time complexity: O(1) - constant time initialization
+Space complexity: O(1) - only local variables used
+
+Prerequisites:
+- headerAddr must point to a valid, properly aligned memory address for the Array header
+- dataAddr must point to a valid, properly aligned memory address for the data region
+- The data region must have sufficient capacity for the specified number of elements
+- Both addresses must be within memory managed by memcore
+
+Edge cases:
+- dataAddr can be located before or after headerAddr in memory (offset can be negative or positive)
+- The offset is calculated as the difference between header and data addresses
+- This method allows non-contiguous memory layouts, unlike ArrayInitializeAt which assumes contiguous layout
+
+Additional notes:
+- The dataAddrOffset field stores the byte offset from the header address to the data address
+- This offset can be negative if data is located before the header in memory
+- After initialization, all standard Array operations work identically regardless of memory layout
+*/
+func ArrayInitializeWithSeparatedHeaderAndData[T any](headerAddr memcore.MarkRaw, dataAddr memcore.MarkRaw, capacity uint64) {
+	itemSize := memcore.SizeOf[T]()
+	arrayPtr := memcore.MemcoreMarkDereferenceObject[Array[T]](headerAddr)
+	*arrayPtr = Array[T]{
+		dataAddrOffset: uintptr(unsafe.Pointer(arrayPtr)) - uintptr(memcore.MemcoreMarkDereference(dataAddr)),
+		capacity:       capacity,
+		itemSize:       uintptr(itemSize),
+		version:        1,
+	}
+
+	arrayPtr.setFnID = memcore.MemcoreFunctionRegisterTyped(
+		getMovementFunc[T](itemSize),
+	)
+}
+
 // ArrayInitializeFrom initializes a new array at arrayAddr with the contents of src.
 // Capacity must be >= src capacity.
 func ArrayInitializeFrom[T any](arrayAddr memcore.MarkRaw, src memcore.MarkRaw, newCapacity uint64) error {
@@ -63,24 +267,109 @@ func ArrayInitializeFrom[T any](arrayAddr memcore.MarkRaw, src memcore.MarkRaw, 
 	return ArrayCopyFrom[T](arrayAddr, src, 0)
 }
 
-// ArraySnapshotCreate creates a deep copy of an array at a new memory location
-// defined by the destination pointer (which points to the start of the new array header).
-// It copies both the header and the data that follow it, maintaining the same relative layout.
+/*
+ArraySnapshotCreate creates a deep copy of an array at a new memory location, preserving
+the memory layout (contiguous or non-contiguous) of the source array.
+
+This function creates a complete snapshot of the array, copying both the header and data
+region. For contiguous arrays, it copies the header and data as a single block. For
+non-contiguous arrays, it copies the header and data separately to maintain the same
+memory layout in the destination.
+
+Use cases:
+- Creating checkpoint/restore points for state management
+- Deep copying arrays for backup purposes
+- Implementing undo/redo functionality
+- State serialization and deserialization
+
+Time complexity: O(n) - where n is the total size of header + data region
+Space complexity: O(1) - only local variables used (destination memory must be pre-allocated)
+
+Prerequisites:
+- dest must point to a valid, properly aligned memory address
+- The destination memory must be large enough to accommodate the array (header + data)
+- Both dest and instance must be valid Array instances of the same type T
+- Both arrays must live in memory managed by memcore
+
+Edge cases:
+- Handles both contiguous and non-contiguous memory layouts automatically
+- Preserves the exact memory layout of the source array
+- Returns dest on success
+- The destination array will have the same capacity and memory layout as the source
+
+Additional notes:
+- This function automatically detects whether the source array uses contiguous or non-contiguous layout
+- For contiguous arrays, copies header + data as a single block for efficiency
+- For non-contiguous arrays, copies header and data separately to preserve layout
+- The version number is copied but not reset (snapshot preserves state)
+*/
 func ArraySnapshotCreate[T any](dest memcore.MarkRaw, instance memcore.MarkRaw) memcore.MarkRaw {
 	arrayPtr := memcore.MemcoreMarkDereferenceObjectUnsafe[Array[T]](instance)
-	totalSize := ArrayRequiredBytesGet[T](arrayPtr.capacity)
-
-	srcAddr := memcore.MemcoreMarkDereference(instance)
-	dstAddr := memcore.MemcoreMarkDereference(dest)
-
-	memcore.MemoryMoveNoHeapPointers(dstAddr, srcAddr, uintptr(totalSize))
+	
+	if arrayIsContiguous(arrayPtr) {
+		// Contiguous layout: copy header + data as single block
+		totalSize := ArrayRequiredBytesGet[T](arrayPtr.capacity)
+		srcAddr := memcore.MemcoreMarkDereference(instance)
+		dstAddr := memcore.MemcoreMarkDereference(dest)
+		memcore.MemoryMoveNoHeapPointers(dstAddr, srcAddr, uintptr(totalSize))
+	} else {
+		// Non-contiguous layout: copy header and data separately
+		headerSize := memcore.SizeOf[Array[T]]()
+		dataSize := uintptr(arrayPtr.capacity) * arrayPtr.itemSize
+		
+		// Copy header
+		srcHeaderAddr := memcore.MemcoreMarkDereference(instance)
+		dstHeaderAddr := memcore.MemcoreMarkDereference(dest)
+		memcore.MemoryMoveNoHeapPointers(dstHeaderAddr, srcHeaderAddr, uintptr(headerSize))
+		
+		// Copy data (preserve the same offset in destination)
+		srcBaseAddr := memcore.MemcoreMarkDereference(instance)
+		dstBaseAddr := memcore.MemcoreMarkDereference(dest)
+		srcDataAddr := arrayComputeDataAddr(arrayPtr, srcBaseAddr)
+		dstDataAddr := unsafe.Add(dstBaseAddr, arrayPtr.dataAddrOffset)
+		memcore.MemoryMoveNoHeapPointers(dstDataAddr, srcDataAddr, dataSize)
+	}
 
 	return dest
 }
 
-// ArraySnapshotRestore replaces the entire memory block of one array
-// (header + data) with that of another array of the same type and capacity.
-// Both arrays must live in manual memory managed by memcore.
+/*
+ArraySnapshotRestore replaces the entire memory content of one array with that of another
+array, preserving the memory layout of both source and destination.
+
+This function restores an array from a previously created snapshot. It copies both the
+header and data region from the source to the destination. The function automatically
+handles both contiguous and non-contiguous memory layouts, ensuring the destination
+layout matches the source layout.
+
+Use cases:
+- Restoring array state from checkpoints
+- Implementing undo/redo functionality
+- State deserialization from snapshots
+- Rollback operations in transactional systems
+
+Time complexity: O(n) - where n is the total size of header + data region
+Space complexity: O(1) - only local variables used
+
+Prerequisites:
+- dest and src must point to valid, properly aligned memory addresses
+- Both arrays must have the same capacity
+- Both arrays must be of the same type T
+- Both arrays must live in memory managed by memcore
+- The destination memory must be large enough to accommodate the source array
+
+Edge cases:
+- Returns nil error if dest == src (no-op)
+- Returns error if capacities do not match
+- Handles both contiguous and non-contiguous memory layouts automatically
+- Preserves the exact memory layout of the source array in the destination
+
+Additional notes:
+- This function automatically detects whether arrays use contiguous or non-contiguous layout
+- For contiguous arrays, copies header + data as a single block for efficiency
+- For non-contiguous arrays, copies header and data separately to preserve layout
+- The destination layout will match the source layout after restoration
+*/
 func ArraySnapshotRestore[T any](dest, src memcore.MarkRaw) error {
 	dstHeader := memcore.MemcoreMarkDereferenceObjectUnsafe[Array[T]](dest)
 	srcHeader := memcore.MemcoreMarkDereferenceObjectUnsafe[Array[T]](src)
@@ -93,18 +382,68 @@ func ArraySnapshotRestore[T any](dest, src memcore.MarkRaw) error {
 		return nil
 	}
 
-	totalBytes := ArrayRequiredBytesGet[T](dstHeader.capacity)
-
-	dstAddr := memcore.MemcoreMarkDereferenceUnsafe(dest)
-	srcAddr := memcore.MemcoreMarkDereferenceUnsafe(src)
-
-	memcore.MemoryMoveNoHeapPointers(dstAddr, srcAddr, uintptr(totalBytes))
+	if arrayIsContiguous(srcHeader) {
+		// Contiguous layout: copy header + data as single block
+		totalBytes := ArrayRequiredBytesGet[T](dstHeader.capacity)
+		dstAddr := memcore.MemcoreMarkDereferenceUnsafe(dest)
+		srcAddr := memcore.MemcoreMarkDereferenceUnsafe(src)
+		memcore.MemoryMoveNoHeapPointers(dstAddr, srcAddr, uintptr(totalBytes))
+	} else {
+		// Non-contiguous layout: copy header and data separately
+		headerSize := memcore.SizeOf[Array[T]]()
+		dataSize := uintptr(srcHeader.capacity) * srcHeader.itemSize
+		
+		// Copy header
+		dstHeaderAddr := memcore.MemcoreMarkDereferenceUnsafe(dest)
+		srcHeaderAddr := memcore.MemcoreMarkDereferenceUnsafe(src)
+		memcore.MemoryMoveNoHeapPointers(dstHeaderAddr, srcHeaderAddr, uintptr(headerSize))
+		
+		// Copy data (preserve the same offset in destination as source)
+		dstBaseAddr := memcore.MemcoreMarkDereferenceUnsafe(dest)
+		srcBaseAddr := memcore.MemcoreMarkDereferenceUnsafe(src)
+		srcDataAddr := arrayComputeDataAddr(srcHeader, srcBaseAddr)
+		dstDataAddr := unsafe.Add(dstBaseAddr, srcHeader.dataAddrOffset)
+		memcore.MemoryMoveNoHeapPointers(dstDataAddr, srcDataAddr, dataSize)
+	}
 
 	return nil
 }
 
-// ArrayHeaderClone clones the header to the array data.
-// It will not move memory at all.
+/*
+ArrayHeaderClone copies only the Array header structure from source to destination,
+without copying any data elements.
+
+This function clones the metadata (capacity, dataAddrOffset, itemSize, version, setFnID)
+from one array to another, but does not copy the actual data elements. This is useful
+when you want to initialize a new array with the same metadata as an existing array,
+but with different or uninitialized data.
+
+Use cases:
+- Initializing arrays with the same metadata configuration
+- Resetting array metadata while preserving data
+- Copying array configuration for template-based initialization
+- Metadata synchronization between arrays
+
+Time complexity: O(1) - only struct field copy operations
+Space complexity: O(1) - only local variables used
+
+Prerequisites:
+- dest and src must point to valid Array instances of the same type T
+- Both arrays must live in memory managed by memcore
+- The destination array's data region must be valid (if dataAddrOffset is set)
+
+Edge cases:
+- Only copies header fields; data elements are not touched
+- The destination array's dataAddrOffset will match the source, which may point to invalid
+  data if the destination's data region is not properly set up
+- Version number is copied, which may not reflect the actual state of destination data
+
+Additional notes:
+- This function does not validate that the destination's data region is valid
+- After cloning, the destination array will have the same capacity and metadata as source
+- The data region is not copied or validated; caller must ensure data region is valid
+- Useful for initializing arrays with the same configuration but different data
+*/
 func ArrayHeaderClone[T any](dest, src memcore.MarkRaw) {
 	dstHeader := memcore.MemcoreMarkDereferenceObjectUnsafe[Array[T]](dest)
 	srcHeader := memcore.MemcoreMarkDereferenceObjectUnsafe[Array[T]](src)
@@ -112,11 +451,41 @@ func ArrayHeaderClone[T any](dest, src memcore.MarkRaw) {
 	*dstHeader = *srcHeader
 }
 
-// ArrayCopyFrom copies the entire contents of src array into dest array,
-// starting at destStartIdx. Both arrays must have the same element type T.
-// Capacity must allow the copy, else an error is returned.
-//
-// Example: copy src[0:srcCap] → dest[destStartIdx : destStartIdx+srcCap]
+/*
+ArrayCopyFrom copies the entire contents of the source array into the destination array,
+starting at the specified destination index.
+
+This function copies all elements from the source array (from index 0 to capacity-1) into
+the destination array starting at destStartIdx. Both arrays must have the same element
+type, and the destination must have sufficient capacity to accommodate the copy operation.
+
+Use cases:
+- Copying array contents to a different location
+- Merging arrays by copying into a larger destination
+- Initializing arrays from existing array data
+- Array migration and data movement operations
+
+Time complexity: O(n) - where n is the source array capacity (number of elements copied)
+Space complexity: O(1) - only local variables used
+
+Prerequisites:
+- dest and src must point to valid Array instances of the same type T
+- Both arrays must live in memory managed by memcore
+- destStartIdx + srcCapacity must not exceed destCapacity
+- Both arrays must have the same element type T
+
+Edge cases:
+- Returns error if destination capacity is insufficient
+- Copies all elements from source (entire capacity, not just used elements)
+- Example: copy src[0:srcCap] → dest[destStartIdx : destStartIdx+srcCap]
+- Increments destination array version after successful copy
+
+Additional notes:
+- This function works with both contiguous and non-contiguous array layouts
+- The copy operation uses efficient memory move operations
+- The destination array's version is incremented to indicate modification
+- Source array version is not modified
+*/
 func ArrayCopyFrom[T any](dest memcore.MarkRaw, src memcore.MarkRaw, destStartIdx uint64) error {
 	destBase, destHeader := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[T]](dest)
 	srcBase, srcHeader := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[T]](src)
@@ -141,8 +510,43 @@ func ArrayCopyFrom[T any](dest memcore.MarkRaw, src memcore.MarkRaw, destStartId
 	return nil
 }
 
-// ArrayCopyFromRange copies src[from:to) into dest starting at destStartIdx.
-// Bounds are checked; both arrays must have same type T.
+/*
+ArrayCopyFromRange copies a contiguous range of elements from the source array into the
+destination array, starting at the specified destination index.
+
+This function copies elements from the source array in the range [from, to) (from inclusive,
+to exclusive) into the destination array starting at destStartIdx. Both arrays must have
+the same element type, and bounds are validated before copying.
+
+Use cases:
+- Copying a subset of array elements to another location
+- Extracting and moving specific ranges of data
+- Partial array merging operations
+- Selective data migration between arrays
+
+Time complexity: O(n) - where n is the number of elements in the range (to - from)
+Space complexity: O(1) - only local variables used
+
+Prerequisites:
+- dest and src must point to valid Array instances of the same type T
+- Both arrays must live in memory managed by memcore
+- from must be less than to (range must be valid)
+- to must not exceed source array capacity
+- destStartIdx + (to - from) must not exceed destination array capacity
+
+Edge cases:
+- Returns error if from >= to (invalid range)
+- Returns error if to exceeds source capacity
+- Returns error if destination capacity is insufficient
+- The range [from, to) is half-open (from inclusive, to exclusive)
+- Increments destination array version after successful copy
+
+Additional notes:
+- This function works with both contiguous and non-contiguous array layouts
+- The copy operation uses efficient memory move operations
+- The destination array's version is incremented to indicate modification
+- Source array version is not modified
+*/
 func ArrayCopyFromRange[T any](
 	dest memcore.MarkRaw,
 	src memcore.MarkRaw,
@@ -1114,6 +1518,12 @@ func arrayGuaranteeIdxValidity[T any](instance *Array[T], idx uint64) error {
 //go:inline
 func arrayComputeDataAddr[T any](instance *Array[T], baseAddr unsafe.Pointer) unsafe.Pointer {
 	return unsafe.Add(baseAddr, instance.dataAddrOffset)
+}
+
+//go:inline
+func arrayIsContiguous[T any](instance *Array[T]) bool {
+	headerSize := memcore.SizeOf[Array[T]]()
+	return instance.dataAddrOffset == uintptr(headerSize)
 }
 
 // ArrayVersionGet returns the current version of the array.
