@@ -248,8 +248,16 @@ Additional notes:
 func ArrayInitializeWithSeparatedHeaderAndData[T any](headerAddr memcore.MarkRaw, dataAddr memcore.MarkRaw, capacity uint64) {
 	itemSize := memcore.SizeOf[T]()
 	arrayPtr := memcore.MemcoreMarkDereferenceObject[Array[T]](headerAddr)
+	
+	headerPtr := uintptr(unsafe.Pointer(arrayPtr))
+	dataPtr := uintptr(memcore.MemcoreMarkDereference(dataAddr))
+	
+	// Calculate offset: dataPtr - headerPtr so that headerPtr + offset = dataPtr
+	// Previous calculation was reversed (headerPtr - dataPtr), which was incorrect
+	dataAddrOffset := dataPtr - headerPtr
+	
 	*arrayPtr = Array[T]{
-		dataAddrOffset: uintptr(unsafe.Pointer(arrayPtr)) - uintptr(memcore.MemcoreMarkDereference(dataAddr)),
+		dataAddrOffset: dataAddrOffset,
 		capacity:       capacity,
 		itemSize:       uintptr(itemSize),
 		version:        1,
@@ -305,13 +313,13 @@ Additional notes:
 */
 func ArraySnapshotCreate[T any](dest memcore.MarkRaw, instance memcore.MarkRaw) memcore.MarkRaw {
 	arrayPtr := memcore.MemcoreMarkDereferenceObjectUnsafe[Array[T]](instance)
-	
+
 	if arrayIsContiguous(arrayPtr) {
 		// Contiguous layout: copy header + data as single block
 		totalSize := ArrayRequiredBytesGet[T](arrayPtr.capacity)
-		srcAddr := memcore.MemcoreMarkDereference(instance)
-		dstAddr := memcore.MemcoreMarkDereference(dest)
-		memcore.MemoryMoveNoHeapPointers(dstAddr, srcAddr, uintptr(totalSize))
+	srcAddr := memcore.MemcoreMarkDereference(instance)
+	dstAddr := memcore.MemcoreMarkDereference(dest)
+	memcore.MemoryMoveNoHeapPointers(dstAddr, srcAddr, uintptr(totalSize))
 	} else {
 		// Non-contiguous layout: copy header and data separately
 		headerSize := memcore.SizeOf[Array[T]]()
@@ -384,10 +392,10 @@ func ArraySnapshotRestore[T any](dest, src memcore.MarkRaw) error {
 
 	if arrayIsContiguous(srcHeader) {
 		// Contiguous layout: copy header + data as single block
-		totalBytes := ArrayRequiredBytesGet[T](dstHeader.capacity)
-		dstAddr := memcore.MemcoreMarkDereferenceUnsafe(dest)
-		srcAddr := memcore.MemcoreMarkDereferenceUnsafe(src)
-		memcore.MemoryMoveNoHeapPointers(dstAddr, srcAddr, uintptr(totalBytes))
+	totalBytes := ArrayRequiredBytesGet[T](dstHeader.capacity)
+	dstAddr := memcore.MemcoreMarkDereferenceUnsafe(dest)
+	srcAddr := memcore.MemcoreMarkDereferenceUnsafe(src)
+	memcore.MemoryMoveNoHeapPointers(dstAddr, srcAddr, uintptr(totalBytes))
 	} else {
 		// Non-contiguous layout: copy header and data separately
 		headerSize := memcore.SizeOf[Array[T]]()
