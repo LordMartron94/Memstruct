@@ -73,7 +73,13 @@ Additional notes:
 func ArrayRequiredBytesGet[T any](capacity uint64) uint64 {
 	headerSize := memcore.SizeOf[Array[T]]()
 	itemSize := memcore.SizeOf[T]()
-	return headerSize + itemSize*capacity
+	
+	// Align data offset to ensure data region meets alignment requirements
+	// This padding is necessary for SIMD operations which require specific alignment
+	dataAlignment := ArrayDataRequiredAlignmentGet[T]()
+	alignedDataOffset := memcore.AlignUp(uint64(headerSize), dataAlignment)
+	
+	return alignedDataOffset + itemSize*capacity
 }
 
 /*
@@ -271,8 +277,23 @@ func ArrayInitializeAt[T any](arrayAddr memcore.MarkRaw, capacity uint64) {
 
 	itemSize := memcore.SizeOf[T]()
 	arrayPtr := memcore.MemcoreMarkDereferenceObject[Array[T]](arrayAddr)
+	
+	// Verify base address alignment - ensures end-to-end alignment
+	// Even with aligned offset, if base address isn't aligned, data won't be aligned
+	basePtr := uintptr(unsafe.Pointer(arrayPtr))
+	requiredAlign := ArrayRequiredAlignmentGet[T]()
+	if basePtr%uintptr(requiredAlign) != 0 {
+		panic(fmt.Sprintf("ArrayInitializeAt: base address not aligned: address %#x, required alignment %d, misalignment %d",
+			basePtr, requiredAlign, basePtr%uintptr(requiredAlign)))
+	}
+	
+	// Align data offset to ensure data region meets alignment requirements
+	// This is critical for SIMD operations which require 32-byte alignment
+	dataAlignment := ArrayDataRequiredAlignmentGet[T]()
+	alignedDataOffset := memcore.AlignUp(uint64(headerSize), dataAlignment)
+	
 	*arrayPtr = Array[T]{
-		dataAddrOffset: uintptr(headerSize),
+		dataAddrOffset: uintptr(alignedDataOffset),
 		capacity:       capacity,
 		itemSize:       uintptr(itemSize),
 		version:        1,
@@ -322,6 +343,14 @@ func ArrayInitializeWithSeparatedHeaderAndData[T any](headerAddr memcore.MarkRaw
 
 	headerPtr := uintptr(unsafe.Pointer(arrayPtr))
 	dataPtr := uintptr(memcore.MemcoreMarkDereference(dataAddr))
+
+	// Verify data alignment - critical for SIMD operations
+	// This ensures the data region meets alignment requirements
+	dataAlignment := ArrayDataRequiredAlignmentGet[T]()
+	if dataPtr%uintptr(dataAlignment) != 0 {
+		panic(fmt.Sprintf("ArrayInitializeWithSeparatedHeaderAndData: data address not aligned: address %#x, required alignment %d, misalignment %d",
+			dataPtr, dataAlignment, dataPtr%uintptr(dataAlignment)))
+	}
 
 	// Calculate offset: dataPtr - headerPtr so that headerPtr + offset = dataPtr
 	// Previous calculation was reversed (headerPtr - dataPtr), which was incorrect
@@ -925,6 +954,120 @@ func ArrayItemPtrGetAtUnsafe[T any](array memcore.MarkRaw, idx uint64) *T {
 func ArrayDataPtrGet[T any](array memcore.MarkRaw) unsafe.Pointer {
 	baseAddr, instance := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[T]](array)
 	return arrayComputeDataAddr(instance, baseAddr)
+}
+
+/*
+ArrayDataAlignmentVerify checks if the data pointer of an array is properly aligned
+according to the required alignment for type T.
+
+This function performs a runtime check to verify that the data region meets alignment
+requirements. This is critical for SIMD operations which require specific alignment
+(e.g., 32-byte alignment for AVX2).
+
+Use cases:
+- Runtime validation before SIMD operations
+- Debugging alignment issues
+- Adaptive code paths that can fall back to unaligned operations
+- Testing and verification of memory layouts
+
+Time complexity: O(1) - simple bitwise operation
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- array must point to a valid Array instance
+
+Edge cases:
+- Returns false if array is invalid or data pointer is nil
+- Returns true if data pointer is aligned to required alignment
+
+Additional notes:
+- Uses bitwise modulo operation for efficient alignment check
+- Alignment check: (uintptr(dataPtr) % uintptr(requiredAlign)) == 0
+- This is a runtime check - compile-time alignment requirements are separate
+*/
+func ArrayDataAlignmentVerify[T any](array memcore.MarkRaw) bool {
+	dataPtr := ArrayDataPtrGet[T](array)
+	if dataPtr == nil {
+		return false
+	}
+	requiredAlign := ArrayDataRequiredAlignmentGet[T]()
+	return uintptr(dataPtr)%uintptr(requiredAlign) == 0
+}
+
+/*
+ArrayDataAlignmentGet returns the actual alignment of the data pointer for an array.
+
+This function finds the largest power-of-two alignment that the data pointer satisfies.
+This is useful for debugging alignment issues and adaptive code paths that can
+select different implementations based on actual alignment.
+
+Use cases:
+- Debugging alignment issues (determine why alignment checks fail)
+- Adaptive code paths that can use different SIMD instructions based on alignment
+- Testing and verification of memory layouts
+- Performance analysis (understanding alignment impact)
+
+Time complexity: O(1) - simple bitwise operations
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- array must point to a valid Array instance
+
+Edge cases:
+- Returns 0 if array is invalid or data pointer is nil
+- Returns 1 if data pointer is not aligned to any power-of-two boundary
+- Returns the largest power-of-two alignment (1, 2, 4, 8, 16, 32, 64, ...)
+
+Additional notes:
+- Uses bitwise operations to find the largest power-of-two divisor
+- Common alignments: 1 (any), 2, 4, 8, 16, 32 (AVX2), 64 (cache line)
+- This is a runtime query - compile-time alignment requirements are separate
+- The result is always a power of two
+- Algorithm: Find the lowest set bit in the address (trailing zeros)
+*/
+func ArrayDataAlignmentGet[T any](array memcore.MarkRaw) uint64 {
+	dataPtr := ArrayDataPtrGet[T](array)
+	if dataPtr == nil {
+		return 0
+	}
+	
+	ptr := uintptr(dataPtr)
+	
+	// Find the largest power-of-two alignment by finding the lowest set bit
+	// If ptr is 0, it's perfectly aligned to all boundaries, but we return 0 for nil
+	if ptr == 0 {
+		return 0
+	}
+	
+	// Find the lowest set bit (trailing zeros) using bitwise AND
+	// This gives us the largest power-of-two alignment
+	// Example: ptr = 0x1000 (4096) -> alignment = 4096 (all bits clear except alignment bits)
+	// Example: ptr = 0x1001 (4097) -> alignment = 1 (lowest bit set)
+	// Example: ptr = 0x1008 (4104) -> alignment = 8 (bits 0-2 clear, bit 3 set)
+	
+	// Check common alignments from largest to smallest
+	if (ptr & 127) == 0 {
+		return 128
+	}
+	if (ptr & 63) == 0 {
+		return 64
+	}
+	if (ptr & 31) == 0 {
+		return 32
+	}
+	if (ptr & 15) == 0 {
+		return 16
+	}
+	if (ptr & 7) == 0 {
+		return 8
+	}
+	if (ptr & 3) == 0 {
+		return 4
+	}
+	if (ptr & 1) == 0 {
+		return 2
+	}
+	return 1
 }
 
 // ArrayByteOffsetGetAt returns the offset relative to the memory region for this idx.

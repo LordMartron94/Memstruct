@@ -18,11 +18,23 @@ type Vector[T foundation.Numeric] Array[T]
 type VectorView[T foundation.Numeric] ArrayView[T]
 
 func VectorRequiredBytesGet[T foundation.Numeric](capacity uint64) uint64 {
-	return ArrayRequiredBytesGet[T](capacity)
+	// Vectors need 32-byte alignment for SIMD, so we must calculate size with correct alignment
+	// ArrayRequiredBytesGet uses ArrayDataRequiredAlignmentGet (element alignment only)
+	// which is insufficient for SIMD operations
+	headerSize := memcore.SizeOf[Array[T]]()
+	itemSize := memcore.SizeOf[T]()
+
+	// Use VectorDataRequiredAlignmentGet which ensures 32-byte alignment for SIMD
+	dataAlignment := VectorDataRequiredAlignmentGet[T]()
+	alignedDataOffset := memcore.AlignUp(uint64(headerSize), dataAlignment)
+
+	return alignedDataOffset + itemSize*capacity
 }
 
 func VectorRequiredAlignmentGet[T foundation.Numeric]() uint64 {
-	return ArrayRequiredAlignmentGet[T]()
+	headerAlign := ArrayHeaderRequiredAlignmentGet[T]()
+	dataAlign := VectorDataRequiredAlignmentGet[T]()
+	return max(headerAlign, dataAlign)
 }
 
 /*
@@ -165,7 +177,11 @@ Additional notes:
 - Internally delegates to ArrayDataRequiredAlignmentGet
 */
 func VectorDataRequiredAlignmentGet[T foundation.Numeric]() uint64 {
-	return ArrayDataRequiredAlignmentGet[T]()
+	// For SIMD operations (AVX2), we need at least 32-byte alignment
+	// Return the maximum of element alignment and SIMD alignment requirement
+	elementAlign := ArrayDataRequiredAlignmentGet[T]()
+	simdAlign := uint64(32) // AVX2 requirement (256-bit = 32 bytes)
+	return max(elementAlign, simdAlign)
 }
 
 func (v *Vector[T]) String() string {
@@ -226,7 +242,39 @@ Additional notes:
 - Internally delegates to ArrayInitializeAt
 */
 func VectorInitializeAt[T foundation.Numeric](vectorAddr memcore.MarkRaw, capacity uint64) {
-	ArrayInitializeAt[T](vectorAddr, capacity)
+	// Vectors need 32-byte alignment for SIMD operations, so we can't use ArrayInitializeAt
+	// which uses ArrayDataRequiredAlignmentGet (element alignment only)
+	// Instead, we implement vector-specific initialization with correct alignment
+	headerSize := memcore.SizeOf[Array[T]]()
+
+	itemSize := memcore.SizeOf[T]()
+	arrayPtr := memcore.MemcoreMarkDereferenceObject[Array[T]](vectorAddr)
+
+	// Verify base address alignment - ensures end-to-end alignment
+	// Even with aligned offset, if base address isn't aligned, data won't be aligned
+	basePtr := uintptr(unsafe.Pointer(arrayPtr))
+	requiredAlign := VectorRequiredAlignmentGet[T]()
+	if basePtr%uintptr(requiredAlign) != 0 {
+		panic(fmt.Sprintf("VectorInitializeAt: base address not aligned: address %#x, required alignment %d, misalignment %d",
+			basePtr, requiredAlign, basePtr%uintptr(requiredAlign)))
+	}
+
+	// Use VectorDataRequiredAlignmentGet which ensures 32-byte alignment for SIMD
+	// This is critical - ArrayDataRequiredAlignmentGet only returns element alignment (8 bytes for float64)
+	// but we need 32 bytes for AVX2 operations
+	dataAlignment := VectorDataRequiredAlignmentGet[T]()
+	alignedDataOffset := memcore.AlignUp(uint64(headerSize), dataAlignment)
+
+	*arrayPtr = Array[T]{
+		dataAddrOffset: uintptr(alignedDataOffset),
+		capacity:       capacity,
+		itemSize:       uintptr(itemSize),
+		version:        1,
+	}
+
+	arrayPtr.setFnID = memcore.MemcoreFunctionRegisterOrGet(
+		getMovementFunc[T](itemSize),
+	)
 }
 
 /*
@@ -264,6 +312,16 @@ Additional notes:
 - Internally delegates to ArrayInitializeWithSeparatedHeaderAndData
 */
 func VectorInitializeWithSeparatedHeaderAndData[T foundation.Numeric](headerAddr memcore.MarkRaw, dataAddr memcore.MarkRaw, capacity uint64) {
+	// Vectors need stricter alignment validation (32 bytes for SIMD)
+	// Verify data alignment before delegating to ArrayInitializeWithSeparatedHeaderAndData
+	dataPtr := uintptr(memcore.MemcoreMarkDereference(dataAddr))
+	dataAlignment := VectorDataRequiredAlignmentGet[T]() // 32 bytes for SIMD
+
+	if dataPtr%uintptr(dataAlignment) != 0 {
+		panic(fmt.Sprintf("VectorInitializeWithSeparatedHeaderAndData: data address not aligned for SIMD: address %#x, required alignment %d, misalignment %d",
+			dataPtr, dataAlignment, dataPtr%uintptr(dataAlignment)))
+	}
+
 	ArrayInitializeWithSeparatedHeaderAndData[T](headerAddr, dataAddr, capacity)
 }
 
@@ -806,6 +864,78 @@ func VectorItemPtrGetAtUnsafe[T foundation.Numeric](vector memcore.MarkRaw, idx 
 //go:inline
 func VectorDataPtrGet[T foundation.Numeric](array memcore.MarkRaw) unsafe.Pointer {
 	return ArrayDataPtrGet[T](array)
+}
+
+/*
+VectorDataAlignmentVerify checks if the data pointer of a vector is properly aligned
+according to the required alignment for numeric type T (including SIMD requirements).
+
+This function wraps ArrayDataAlignmentVerify for numeric types, but uses
+VectorDataRequiredAlignmentGet which ensures 32-byte alignment for SIMD operations.
+
+Use cases:
+- Runtime validation before SIMD operations
+- Debugging alignment issues in vector operations
+- Adaptive code paths that can fall back to unaligned operations
+- Testing and verification of vector memory layouts
+
+Time complexity: O(1) - simple bitwise operation
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- vector must point to a valid Vector instance
+
+Edge cases:
+- Returns false if vector is invalid or data pointer is nil
+- Returns true if data pointer is aligned to required alignment (32 bytes for SIMD)
+
+Additional notes:
+- Uses VectorDataRequiredAlignmentGet which ensures 32-byte alignment for SIMD
+- This is critical for AVX2 operations which require 32-byte alignment
+- Internally wraps ArrayDataAlignmentVerify but with vector-specific alignment check
+*/
+func VectorDataAlignmentVerify[T foundation.Numeric](vector memcore.MarkRaw) bool {
+	dataPtr := VectorDataPtrGet[T](vector)
+	if dataPtr == nil {
+		return false
+	}
+	requiredAlign := VectorDataRequiredAlignmentGet[T]()
+	return uintptr(dataPtr)%uintptr(requiredAlign) == 0
+}
+
+/*
+VectorDataAlignmentGet returns the actual alignment of the data pointer for a vector.
+
+This function wraps ArrayDataAlignmentGet for numeric types, providing the same
+functionality for vectors. It finds the largest power-of-two alignment that the
+data pointer satisfies.
+
+Use cases:
+- Debugging alignment issues in vector operations
+- Adaptive code paths that can use different SIMD instructions based on alignment
+- Testing and verification of vector memory layouts
+- Performance analysis (understanding alignment impact on SIMD operations)
+
+Time complexity: O(1) - simple bitwise operations
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- vector must point to a valid Vector instance
+
+Edge cases:
+- Returns 0 if vector is invalid or data pointer is nil
+- Returns 1 if data pointer is not aligned to any power-of-two boundary
+- Returns the largest power-of-two alignment (1, 2, 4, 8, 16, 32, 64, ...)
+
+Additional notes:
+- Internally wraps ArrayDataAlignmentGet
+- Common alignments: 1 (any), 2, 4, 8, 16, 32 (AVX2), 64 (cache line)
+- This is a runtime query - compile-time alignment requirements are separate
+- The result is always a power of two
+- Useful for debugging why SIMD operations might fail alignment checks
+*/
+func VectorDataAlignmentGet[T foundation.Numeric](vector memcore.MarkRaw) uint64 {
+	return ArrayDataAlignmentGet[T](vector)
 }
 
 // VectorByteOffsetGetAt returns the offset relative to the memory region for this idx.
