@@ -278,7 +278,7 @@ func ArrayInitializeAt[T any](arrayAddr memcore.MarkRaw, capacity uint64) {
 		version:        1,
 	}
 
-	arrayPtr.setFnID = memcore.MemcoreFunctionRegisterTyped(
+	arrayPtr.setFnID = memcore.MemcoreFunctionRegisterOrGet(
 		getMovementFunc[T](itemSize),
 	)
 }
@@ -334,7 +334,7 @@ func ArrayInitializeWithSeparatedHeaderAndData[T any](headerAddr memcore.MarkRaw
 		version:        1,
 	}
 
-	arrayPtr.setFnID = memcore.MemcoreFunctionRegisterTyped(
+	arrayPtr.setFnID = memcore.MemcoreFunctionRegisterOrGet(
 		getMovementFunc[T](itemSize),
 	)
 }
