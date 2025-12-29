@@ -1522,3 +1522,304 @@ func vectorUnrolledGeneric[T foundation.Numeric](capacity uint64, stride uint64,
 		apply(uintptr(i))
 	}
 }
+
+/*
+VectorCursor represents a fast-access cursor for efficient random access to vector elements.
+
+This type wraps ArrayCursor for numeric types, providing the same high-performance cursor interface
+specialized for vectors. The cursor caches the base data pointer, element size, and capacity, enabling
+fast pointer arithmetic without repeated header dereferencing.
+
+Use cases:
+- High-performance random access to vector elements
+- Batch processing with non-sequential access patterns
+- SIMD-optimized operations requiring direct pointer access
+- Reducing overhead in performance-critical loops
+- Zero-copy element access for read/write operations
+
+Time complexity: O(1) - structure initialization is constant-time
+Space complexity: O(1) - fixed-size structure
+
+Prerequisites:
+- Must be created using VectorCursorCreate
+- Vector must remain valid for the lifetime of the cursor
+
+Edge cases:
+- Cursor becomes invalid if vector memory is deallocated or unregistered
+- No bounds checking is performed - caller must ensure indices are valid
+- Capacity reflects the vector's capacity, not its current length
+
+Additional notes:
+- Cursor caches the data base pointer and item size for maximum performance
+- Uses unsafe pointer arithmetic for direct memory access
+- Type safety is maintained through the generic parameter T (must be foundation.Numeric)
+- Suitable for both sequential and random access patterns
+- Internally wraps ArrayCursor for numeric types
+*/
+type VectorCursor[T foundation.Numeric] ArrayCursor[T]
+
+/*
+VectorCursorCreate creates a fast-access cursor around a Vector[T].
+
+This function wraps ArrayCursorCreate for numeric types, initializing a cursor that caches the base
+data pointer and element size. The cursor provides O(1) random access to any element through direct
+pointer arithmetic, eliminating function call overhead and header lookups in performance-critical
+code paths.
+
+Use cases:
+- Setting up cursor-based iteration loops for vectors
+- High-performance random access patterns
+- Batch processing operations on numeric data
+- SIMD-optimized data processing
+- Zero-copy element manipulation
+
+Time complexity: O(1) - calculates offset and creates cursor
+Space complexity: O(1) - returns a fixed-size cursor structure
+
+Prerequisites:
+- vector must be a valid MarkRaw pointing to an initialized Vector[T]
+- Vector must not have been deallocated or unregistered
+- Type T must be a numeric type (foundation.Numeric)
+
+Edge cases:
+- Cursor becomes invalid if vector memory is deallocated or unregistered
+- Data pointer points directly to the vector's data region
+- Capacity reflects the vector's capacity, not its current length
+
+Additional notes:
+- Cursor caches data pointer and item size for maximum performance
+- Uses unsafe pointer arithmetic for direct memory access
+- No header manipulation required after cursor creation
+- Type safety is maintained through the generic parameter T (must be foundation.Numeric)
+- The cursor is a value type and can be copied, but shares the same underlying data
+- Internally delegates to ArrayCursorCreate
+*/
+//
+//go:inline
+func VectorCursorCreate[T foundation.Numeric](vector memcore.MarkRaw) VectorCursor[T] {
+	return VectorCursor[T](ArrayCursorCreate[T](vector))
+}
+
+/*
+PtrAt returns a pointer to the element at the given index.
+
+This function wraps ArrayCursor.PtrAt for numeric types, using pointer arithmetic to calculate the
+address of the element at the specified index. This avoids any header dereferencing or function calls,
+providing maximum performance for random access patterns.
+
+Use cases:
+- Direct element access in cursor-based iteration loops
+- High-performance batch operations
+- SIMD-optimized data processing
+- Zero-copy read/write operations
+
+Time complexity: O(1) - pointer arithmetic only
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- cursor must be a valid VectorCursor created with VectorCursorCreate
+- idx must be in range [0, cursor.Capacity())
+
+Edge cases:
+- No bounds checking is performed - caller must ensure idx is valid
+- Returns invalid pointer if idx exceeds capacity
+- Pointer becomes invalid if vector memory is deallocated or unregistered
+- Modifying elements through the pointer directly affects the vector data
+
+Additional notes:
+- Uses cached base pointer and item size for maximum performance
+- Returns a pointer that can be used for both reading and writing
+- Type safety is maintained through the generic parameter T (must be foundation.Numeric)
+- The returned pointer remains valid as long as the vector and cursor are valid
+- Internally delegates to ArrayCursor.PtrAt
+*/
+//
+//go:inline
+func (c *VectorCursor[T]) PtrAt(idx uint64) *T {
+	return (*ArrayCursor[T])(c).PtrAt(idx)
+}
+
+/*
+Capacity returns the number of elements that can be stored in the vector.
+
+This function wraps ArrayCursor.Capacity for numeric types, returning the capacity of the vector that
+the cursor was created from. The capacity represents the maximum number of elements that can be stored,
+not the current length of valid elements in the vector.
+
+Use cases:
+- Bounds checking before accessing elements
+- Loop iteration limits
+- Memory allocation planning
+- Validation of index ranges
+
+Time complexity: O(1) - returns cached value
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- cursor must be a valid VectorCursor created with VectorCursorCreate
+
+Edge cases:
+- Returns the vector's capacity, which may be greater than the number of valid elements
+- Capacity does not change after cursor creation, even if the vector is modified
+
+Additional notes:
+- Capacity is cached at cursor creation time
+- The value reflects the vector's capacity at the time the cursor was created
+- Type safety is maintained through the generic parameter T (must be foundation.Numeric)
+- Internally delegates to ArrayCursor.Capacity
+*/
+//
+//go:inline
+func (c *VectorCursor[T]) Capacity() uint64 {
+	return (*ArrayCursor[T])(c).Capacity()
+}
+
+/*
+VectorForwardCursor represents a forward-only iterator for efficient sequential iteration over vector elements.
+
+This type wraps ArrayForwardCursor for numeric types, providing the same high-performance forward-only
+iterator interface specialized for vectors. The cursor caches the current position pointer, end pointer,
+and element size, enabling ultra-fast sequential iteration with minimal overhead.
+
+Use cases:
+- High-performance sequential iteration over all vector elements
+- Batch processing of contiguous elements
+- SIMD-optimized operations on sequential data
+- Reducing overhead in tight iteration loops
+- Forward-only traversal patterns
+
+Time complexity: O(1) - structure initialization is constant-time
+Space complexity: O(1) - fixed-size structure
+
+Prerequisites:
+- Must be created using VectorForwardCursorCreate
+- Vector must remain valid for the lifetime of the cursor
+
+Edge cases:
+- Cursor becomes invalid if vector memory is deallocated or unregistered
+- Cursor can only iterate forward, not backward
+- Iteration covers the vector's capacity, not its current length
+
+Additional notes:
+- Cursor uses pointer arithmetic for maximum performance
+- Bounds checking is a simple pointer comparison (no index calculations)
+- Advancement uses only pointer addition (no multiplication in hot loop)
+- Type safety is maintained through the generic parameter T (must be foundation.Numeric)
+- Suitable only for forward sequential access patterns
+- Internally wraps ArrayForwardCursor for numeric types
+*/
+type VectorForwardCursor[T foundation.Numeric] ArrayForwardCursor[T]
+
+/*
+VectorForwardCursorCreate creates a forward-only iterator cursor for efficient sequential iteration.
+
+This function wraps ArrayForwardCursorCreate for numeric types, initializing a cursor that caches the
+start and end pointers along with element size. The cursor uses simple pointer comparison for bounds
+checking and pointer addition for advancement, avoiding multiplication operations in the iteration loop.
+
+Use cases:
+- Setting up forward-only iteration loops for vectors
+- High-performance sequential access patterns
+- Batch processing operations on numeric data
+- SIMD-optimized sequential data processing
+
+Time complexity: O(1) - calculates pointers and creates cursor
+Space complexity: O(1) - returns a fixed-size cursor structure
+
+Prerequisites:
+- vector must be a valid MarkRaw pointing to an initialized Vector[T]
+- Vector must not have been deallocated or unregistered
+- Type T must be a numeric type (foundation.Numeric)
+
+Edge cases:
+- Cursor becomes invalid if vector memory is deallocated or unregistered
+- Iteration covers the vector's capacity, not its current length
+- Cursor can only iterate forward, not backward
+
+Additional notes:
+- Cursor caches start and end pointers for maximum performance
+- Uses pointer arithmetic for bounds checking and advancement
+- No multiplication in the hot loop (only pointer addition)
+- Type safety is maintained through the generic parameter T (must be foundation.Numeric)
+- The cursor is a value type and can be copied, but shares the same underlying data
+- Internally delegates to ArrayForwardCursorCreate
+*/
+func VectorForwardCursorCreate[T foundation.Numeric](vector memcore.MarkRaw) VectorForwardCursor[T] {
+	return VectorForwardCursor[T](ArrayForwardCursorCreate[T](vector))
+}
+
+/*
+HasNext checks if there are more elements to iterate over.
+
+This function wraps ArrayForwardCursor.HasNext for numeric types, performing a simple pointer comparison
+to determine if the cursor has reached the end of the vector. The comparison is extremely fast as it
+requires no index calculations or arithmetic operations, only a direct pointer comparison.
+
+Use cases:
+- Loop condition for forward iteration
+- Bounds checking before accessing elements
+- Early termination of iteration loops
+
+Time complexity: O(1) - simple pointer comparison
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- cursor must be a valid VectorForwardCursor created with VectorForwardCursorCreate
+
+Edge cases:
+- Returns false when currentPtr reaches or exceeds endPtr
+- Returns true as long as there are more elements to process
+- Comparison is based on pointer addresses, not element count
+
+Additional notes:
+- Uses simple pointer comparison for maximum performance
+- No arithmetic operations required
+- Type safety is maintained through the generic parameter T (must be foundation.Numeric)
+- Should be called before each Next() call in iteration loops
+- Internally delegates to ArrayForwardCursor.HasNext
+*/
+//
+//go:inline
+func (c *VectorForwardCursor[T]) HasNext() bool {
+	return (*ArrayForwardCursor[T])(c).HasNext()
+}
+
+/*
+Next returns a pointer to the current element and advances the cursor to the next element.
+
+This function wraps ArrayForwardCursor.Next for numeric types, returning a pointer to the current element
+and then advancing the cursor by one element using pointer addition. The advancement uses only pointer
+addition (no multiplication), making it extremely efficient for sequential iteration.
+
+Use cases:
+- Sequential element access in iteration loops
+- High-performance batch operations
+- SIMD-optimized data processing
+- Zero-copy element manipulation
+
+Time complexity: O(1) - pointer addition only
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- cursor must be a valid VectorForwardCursor created with VectorForwardCursorCreate
+- HasNext() should return true before calling Next()
+
+Edge cases:
+- No bounds checking is performed - caller must ensure HasNext() returns true
+- Returns invalid pointer if called after reaching the end
+- Modifying elements through the pointer directly affects the vector data
+- Cursor advances forward only, cannot go backward
+
+Additional notes:
+- Uses only pointer addition for advancement (no multiplication in hot loop)
+- Returns a pointer that can be used for both reading and writing
+- Type safety is maintained through the generic parameter T (must be foundation.Numeric)
+- The returned pointer remains valid as long as the vector and cursor are valid
+- Should be called in a loop with HasNext() as the condition
+- Internally delegates to ArrayForwardCursor.Next
+*/
+//
+//go:inline
+func (c *VectorForwardCursor[T]) Next() *T {
+	return (*ArrayForwardCursor[T])(c).Next()
+}
