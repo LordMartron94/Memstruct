@@ -10,7 +10,7 @@ VectorCursorHeader caches the Vector header pointer for hot-path operations that
 
 This cursor type stores a direct pointer to the Vector header, eliminating the need to dereference
 MarkRaw on every operation. Since Vector is structurally equivalent to Array, this cursor wraps
-ArrayCursorHeader functionality for numeric types.
+ArrayCursor functionality for numeric types.
 
 Use cases:
 - High-performance loops with repeated vector access
@@ -112,15 +112,15 @@ Additional notes:
 - Uses cached header pointer for maximum performance
 - Performs bounds checking before access
 - Type safety is maintained through the generic parameter T (must be foundation.Numeric)
-- Wraps ArrayCursorHeaderItemGetAt functionality
+- Wraps ArrayCursorItemGetAt functionality
 */
 //
 //go:inline
 func VectorCursorHeaderItemGetAt[T foundation.Numeric](cursor VectorCursorHeader[T], idx uint64) (T, error) {
-	arrayCursor := ArrayCursorHeader[T]{
+	arrayCursor := ArrayCursor[T]{
 		header: (*Array[T])(cursor.header),
 	}
-	return ArrayCursorHeaderItemGetAt[T](arrayCursor, idx)
+	return ArrayCursorItemGetAt[T](arrayCursor, idx)
 }
 
 /*
@@ -151,15 +151,15 @@ Additional notes:
 - Uses cached header pointer for maximum performance
 - No bounds checking for maximum speed
 - Type safety is maintained through the generic parameter T (must be foundation.Numeric)
-- Wraps ArrayCursorHeaderItemGetAtUnsafe functionality
+- Wraps ArrayCursorItemGetAtUnsafe functionality
 */
 //
 //go:inline
 func VectorCursorHeaderItemGetAtUnsafe[T foundation.Numeric](cursor VectorCursorHeader[T], idx uint64) T {
-	arrayCursor := ArrayCursorHeader[T]{
+	arrayCursor := ArrayCursor[T]{
 		header: (*Array[T])(cursor.header),
 	}
-	return ArrayCursorHeaderItemGetAtUnsafe[T](arrayCursor, idx)
+	return ArrayCursorItemGetAtUnsafe[T](arrayCursor, idx)
 }
 
 /*
@@ -192,15 +192,15 @@ Additional notes:
 - Performs bounds checking before access
 - Returns pointer that can be used for both reading and writing
 - Type safety is maintained through the generic parameter T (must be foundation.Numeric)
-- Wraps ArrayCursorHeaderItemPtrGetAt functionality
+- Wraps ArrayCursorItemPtrGetAt functionality
 */
 //
 //go:inline
 func VectorCursorHeaderItemPtrGetAt[T foundation.Numeric](cursor VectorCursorHeader[T], idx uint64) (*T, error) {
-	arrayCursor := ArrayCursorHeader[T]{
+	arrayCursor := ArrayCursor[T]{
 		header: (*Array[T])(cursor.header),
 	}
-	return ArrayCursorHeaderItemPtrGetAt[T](arrayCursor, idx)
+	return ArrayCursorItemPtrGetAt[T](arrayCursor, idx)
 }
 
 /*
@@ -233,15 +233,15 @@ Additional notes:
 - No bounds checking for maximum speed
 - Returns pointer that can be used for both reading and writing
 - Type safety is maintained through the generic parameter T (must be foundation.Numeric)
-- Wraps ArrayCursorHeaderItemPtrGetAtUnsafe functionality
+- Wraps ArrayCursorItemPtrGetAtUnsafe functionality
 */
 //
 //go:inline
 func VectorCursorHeaderItemPtrGetAtUnsafe[T foundation.Numeric](cursor VectorCursorHeader[T], idx uint64) *T {
-	arrayCursor := ArrayCursorHeader[T]{
+	arrayCursor := ArrayCursor[T]{
 		header: (*Array[T])(cursor.header),
 	}
-	return ArrayCursorHeaderItemPtrGetAtUnsafe[T](arrayCursor, idx)
+	return ArrayCursorItemPtrGetAtUnsafe[T](arrayCursor, idx)
 }
 
 /*
@@ -274,15 +274,15 @@ Additional notes:
 - Performs bounds checking before modification
 - Uses registered set function for type-specific assignment
 - Type safety is maintained through the generic parameter T (must be foundation.Numeric)
-- Wraps ArrayCursorHeaderItemSetAt functionality
+- Wraps ArrayCursorItemSetAt functionality
 */
 //
 //go:inline
 func VectorCursorHeaderItemSetAt[T foundation.Numeric](cursor VectorCursorHeader[T], idx uint64, value T) error {
-	arrayCursor := ArrayCursorHeader[T]{
+	arrayCursor := ArrayCursor[T]{
 		header: (*Array[T])(cursor.header),
 	}
-	return ArrayCursorHeaderItemSetAt[T](arrayCursor, idx, value)
+	return ArrayCursorItemSetAt[T](arrayCursor, idx, value)
 }
 
 /*
@@ -315,15 +315,15 @@ Additional notes:
 - No bounds checking for maximum speed
 - Uses registered set function for type-specific assignment
 - Type safety is maintained through the generic parameter T (must be foundation.Numeric)
-- Wraps ArrayCursorHeaderItemSetAtUnsafe functionality
+- Wraps ArrayCursorItemSetAtUnsafe functionality
 */
 //
 //go:inline
 func VectorCursorHeaderItemSetAtUnsafe[T foundation.Numeric](cursor VectorCursorHeader[T], idx uint64, value T) {
-	arrayCursor := ArrayCursorHeader[T]{
+	arrayCursor := ArrayCursor[T]{
 		header: (*Array[T])(cursor.header),
 	}
-	ArrayCursorHeaderItemSetAtUnsafe[T](arrayCursor, idx, value)
+	ArrayCursorItemSetAtUnsafe[T](arrayCursor, idx, value)
 }
 
 /*
@@ -354,15 +354,15 @@ Additional notes:
 - Uses cached header pointer for maximum performance
 - Capacity is stored in the vector header
 - Type safety is maintained through the generic parameter T (must be foundation.Numeric)
-- Wraps ArrayCursorHeaderCapacityGet functionality
+- Wraps ArrayCursorCapacityGet functionality
 */
 //
 //go:inline
 func VectorCursorHeaderCapacityGet[T foundation.Numeric](cursor VectorCursorHeader[T]) uint64 {
-	arrayCursor := ArrayCursorHeader[T]{
+	arrayCursor := ArrayCursor[T]{
 		header: (*Array[T])(cursor.header),
 	}
-	return ArrayCursorHeaderCapacityGet[T](arrayCursor)
+	return ArrayCursorCapacityGet[T](arrayCursor)
 }
 
 /*
@@ -394,14 +394,14 @@ Additional notes:
 - Version is stored in the vector header
 - Version starts at 1 when vector is initialized
 - Type safety is maintained through the generic parameter T (must be foundation.Numeric)
-- Wraps ArrayCursorHeaderVersionGet functionality
+- Wraps ArrayCursorVersionGet functionality
 */
 //
 //go:inline
 func VectorCursorHeaderVersionGet[T foundation.Numeric](cursor VectorCursorHeader[T]) uint64 {
-	arrayCursor := ArrayCursorHeader[T]{
+	arrayCursor := ArrayCursor[T]{
 		header: (*Array[T])(cursor.header),
 	}
-	return ArrayCursorHeaderVersionGet[T](arrayCursor)
+	return ArrayCursorVersionGet[T](arrayCursor)
 }
 

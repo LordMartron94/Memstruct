@@ -6,7 +6,7 @@ import (
 )
 
 /*
-ArrayCursorHeader caches the Array header pointer for hot-path operations that bypass MarkRaw dereference overhead.
+ArrayCursor caches the Array header pointer for hot-path operations that bypass MarkRaw dereference overhead.
 
 This cursor type stores a direct pointer to the Array header, eliminating the need to dereference
 MarkRaw on every operation. This is optimized for hot paths where memory movement is guaranteed
@@ -22,7 +22,7 @@ Time complexity: O(1) - structure initialization is constant-time
 Space complexity: O(1) - fixed-size structure
 
 Prerequisites:
-- Must be created using ArrayCursorHeaderCreate
+- Must be created using ArrayCursorCreate
 - Array memory must remain valid and unmoved for cursor lifetime
 - Memory movement invalidates the cursor (undefined behavior if used after movement)
 
@@ -38,12 +38,12 @@ Additional notes:
 - Suitable for both sequential and random access patterns
 - The cursor is a value type and can be copied, but shares the same underlying header
 */
-type ArrayCursorHeader[T any] struct {
+type ArrayCursor[T any] struct {
 	header *Array[T]
 }
 
 /*
-ArrayCursorHeaderCreate creates a cursor that caches the Array header pointer for hot-path operations.
+ArrayCursorCreate creates a cursor that caches the Array header pointer for hot-path operations.
 
 This function performs a single MarkRaw dereference and caches the resulting header pointer,
 enabling subsequent operations to bypass the dereference overhead. The cursor is optimized for
@@ -77,15 +77,15 @@ Additional notes:
 */
 //
 //go:inline
-func ArrayCursorHeaderCreate[T any](array memcore.MarkRaw) ArrayCursorHeader[T] {
+func ArrayCursorCreate[T any](array memcore.MarkRaw) ArrayCursor[T] {
 	header := memcore.MemcoreMarkDereferenceObjectUnsafe[Array[T]](array)
-	return ArrayCursorHeader[T]{
+	return ArrayCursor[T]{
 		header: header,
 	}
 }
 
 /*
-ArrayCursorHeaderItemGetAt returns the element at the given index within the array.
+ArrayCursorItemGetAt returns the element at the given index within the array.
 
 This function uses the cached header pointer to access array elements, bypassing MarkRaw
 dereference overhead. It performs bounds checking and returns an error if the index is invalid.
@@ -99,7 +99,7 @@ Time complexity: O(1) - pointer arithmetic and bounds check
 Space complexity: O(1) - no allocations
 
 Prerequisites:
-- cursor must be a valid ArrayCursorHeader created with ArrayCursorHeaderCreate
+- cursor must be a valid ArrayCursor created with ArrayCursorCreate
 - idx must be in range [0, cursor.header.capacity)
 - Array memory must remain valid and unmoved
 
@@ -115,7 +115,7 @@ Additional notes:
 */
 //
 //go:inline
-func ArrayCursorHeaderItemGetAt[T any](cursor ArrayCursorHeader[T], idx uint64) (T, error) {
+func ArrayCursorItemGetAt[T any](cursor ArrayCursor[T], idx uint64) (T, error) {
 	if err := arrayGuaranteeIdxValidity(cursor.header, idx); err != nil {
 		var zero T
 		return zero, err
@@ -127,7 +127,7 @@ func ArrayCursorHeaderItemGetAt[T any](cursor ArrayCursorHeader[T], idx uint64) 
 }
 
 /*
-ArrayCursorHeaderItemGetAtUnsafe returns the element at the given index within the array.
+ArrayCursorItemGetAtUnsafe returns the element at the given index within the array.
 
 This function uses the cached header pointer to access array elements, bypassing MarkRaw
 dereference overhead. It performs no bounds checking, so callers must ensure the index is valid.
@@ -141,7 +141,7 @@ Time complexity: O(1) - pointer arithmetic only
 Space complexity: O(1) - no allocations
 
 Prerequisites:
-- cursor must be a valid ArrayCursorHeader created with ArrayCursorHeaderCreate
+- cursor must be a valid ArrayCursor created with ArrayCursorCreate
 - idx must be in range [0, cursor.header.capacity) (caller must validate)
 - Array memory must remain valid and unmoved
 
@@ -157,14 +157,14 @@ Additional notes:
 */
 //
 //go:inline
-func ArrayCursorHeaderItemGetAtUnsafe[T any](cursor ArrayCursorHeader[T], idx uint64) T {
+func ArrayCursorItemGetAtUnsafe[T any](cursor ArrayCursor[T], idx uint64) T {
 	baseAddr := unsafe.Pointer(cursor.header)
 	itemPtr := arrayGetPtrAtIdx(cursor.header, baseAddr, idx)
 	return *(*T)(itemPtr)
 }
 
 /*
-ArrayCursorHeaderItemPtrGetAt returns a pointer to the element at the given index within the array.
+ArrayCursorItemPtrGetAt returns a pointer to the element at the given index within the array.
 
 This function uses the cached header pointer to access array elements, bypassing MarkRaw
 dereference overhead. It performs bounds checking and returns an error if the index is invalid.
@@ -178,7 +178,7 @@ Time complexity: O(1) - pointer arithmetic and bounds check
 Space complexity: O(1) - no allocations
 
 Prerequisites:
-- cursor must be a valid ArrayCursorHeader created with ArrayCursorHeaderCreate
+- cursor must be a valid ArrayCursor created with ArrayCursorCreate
 - idx must be in range [0, cursor.header.capacity)
 - Array memory must remain valid and unmoved
 
@@ -196,7 +196,7 @@ Additional notes:
 */
 //
 //go:inline
-func ArrayCursorHeaderItemPtrGetAt[T any](cursor ArrayCursorHeader[T], idx uint64) (*T, error) {
+func ArrayCursorItemPtrGetAt[T any](cursor ArrayCursor[T], idx uint64) (*T, error) {
 	if err := arrayGuaranteeIdxValidity(cursor.header, idx); err != nil {
 		return nil, err
 	}
@@ -207,7 +207,7 @@ func ArrayCursorHeaderItemPtrGetAt[T any](cursor ArrayCursorHeader[T], idx uint6
 }
 
 /*
-ArrayCursorHeaderItemPtrGetAtUnsafe returns a pointer to the element at the given index within the array.
+ArrayCursorItemPtrGetAtUnsafe returns a pointer to the element at the given index within the array.
 
 This function uses the cached header pointer to access array elements, bypassing MarkRaw
 dereference overhead. It performs no bounds checking, so callers must ensure the index is valid.
@@ -221,7 +221,7 @@ Time complexity: O(1) - pointer arithmetic only
 Space complexity: O(1) - no allocations
 
 Prerequisites:
-- cursor must be a valid ArrayCursorHeader created with ArrayCursorHeaderCreate
+- cursor must be a valid ArrayCursor created with ArrayCursorCreate
 - idx must be in range [0, cursor.header.capacity) (caller must validate)
 - Array memory must remain valid and unmoved
 
@@ -239,14 +239,14 @@ Additional notes:
 */
 //
 //go:inline
-func ArrayCursorHeaderItemPtrGetAtUnsafe[T any](cursor ArrayCursorHeader[T], idx uint64) *T {
+func ArrayCursorItemPtrGetAtUnsafe[T any](cursor ArrayCursor[T], idx uint64) *T {
 	baseAddr := unsafe.Pointer(cursor.header)
 	itemPtr := arrayGetPtrAtIdx(cursor.header, baseAddr, idx)
 	return (*T)(itemPtr)
 }
 
 /*
-ArrayCursorHeaderItemSetAt sets the element at the given index to the specified value.
+ArrayCursorItemSetAt sets the element at the given index to the specified value.
 
 This function uses the cached header pointer to modify array elements, bypassing MarkRaw
 dereference overhead. It performs bounds checking and returns an error if the index is invalid.
@@ -261,7 +261,7 @@ Time complexity: O(1) - pointer arithmetic, bounds check, and set operation
 Space complexity: O(1) - no allocations
 
 Prerequisites:
-- cursor must be a valid ArrayCursorHeader created with ArrayCursorHeaderCreate
+- cursor must be a valid ArrayCursor created with ArrayCursorCreate
 - idx must be in range [0, cursor.header.capacity)
 - Array memory must remain valid and unmoved
 
@@ -278,7 +278,7 @@ Additional notes:
 */
 //
 //go:inline
-func ArrayCursorHeaderItemSetAt[T any](cursor ArrayCursorHeader[T], idx uint64, value T) error {
+func ArrayCursorItemSetAt[T any](cursor ArrayCursor[T], idx uint64, value T) error {
 	if err := arrayGuaranteeIdxValidity(cursor.header, idx); err != nil {
 		return err
 	}
@@ -292,7 +292,7 @@ func ArrayCursorHeaderItemSetAt[T any](cursor ArrayCursorHeader[T], idx uint64, 
 }
 
 /*
-ArrayCursorHeaderItemSetAtUnsafe sets the element at the given index to the specified value.
+ArrayCursorItemSetAtUnsafe sets the element at the given index to the specified value.
 
 This function uses the cached header pointer to modify array elements, bypassing MarkRaw
 dereference overhead. It performs no bounds checking, so callers must ensure the index is valid.
@@ -307,7 +307,7 @@ Time complexity: O(1) - pointer arithmetic and set operation
 Space complexity: O(1) - no allocations
 
 Prerequisites:
-- cursor must be a valid ArrayCursorHeader created with ArrayCursorHeaderCreate
+- cursor must be a valid ArrayCursor created with ArrayCursorCreate
 - idx must be in range [0, cursor.header.capacity) (caller must validate)
 - Array memory must remain valid and unmoved
 
@@ -324,7 +324,7 @@ Additional notes:
 */
 //
 //go:inline
-func ArrayCursorHeaderItemSetAtUnsafe[T any](cursor ArrayCursorHeader[T], idx uint64, value T) {
+func ArrayCursorItemSetAtUnsafe[T any](cursor ArrayCursor[T], idx uint64, value T) {
 	baseAddr := unsafe.Pointer(cursor.header)
 	itemPtr := arrayGetPtrAtIdx(cursor.header, baseAddr, idx)
 	memcore.MemcoreFunctionRetrieveTyped[setFn[T]](cursor.header.setFnID)(itemPtr, value)
@@ -333,7 +333,7 @@ func ArrayCursorHeaderItemSetAtUnsafe[T any](cursor ArrayCursorHeader[T], idx ui
 }
 
 /*
-ArrayCursorHeaderCapacityGet returns the capacity of the array.
+ArrayCursorCapacityGet returns the capacity of the array.
 
 This function uses the cached header pointer to access the array capacity, bypassing MarkRaw
 dereference overhead. The capacity represents the maximum number of elements that can be stored
@@ -348,7 +348,7 @@ Time complexity: O(1) - returns cached value
 Space complexity: O(1) - no allocations
 
 Prerequisites:
-- cursor must be a valid ArrayCursorHeader created with ArrayCursorHeaderCreate
+- cursor must be a valid ArrayCursor created with ArrayCursorCreate
 - Array memory must remain valid and unmoved
 
 Edge cases:
@@ -363,12 +363,12 @@ Additional notes:
 */
 //
 //go:inline
-func ArrayCursorHeaderCapacityGet[T any](cursor ArrayCursorHeader[T]) uint64 {
+func ArrayCursorCapacityGet[T any](cursor ArrayCursor[T]) uint64 {
 	return cursor.header.capacity
 }
 
 /*
-ArrayCursorHeaderVersionGet returns the current version of the array.
+ArrayCursorVersionGet returns the current version of the array.
 
 This function uses the cached header pointer to access the array version, bypassing MarkRaw
 dereference overhead. The version increments on every modification to the array data, allowing
@@ -383,7 +383,7 @@ Time complexity: O(1) - returns cached value
 Space complexity: O(1) - no allocations
 
 Prerequisites:
-- cursor must be a valid ArrayCursorHeader created with ArrayCursorHeaderCreate
+- cursor must be a valid ArrayCursor created with ArrayCursorCreate
 - Array memory must remain valid and unmoved
 
 Edge cases:
@@ -399,6 +399,80 @@ Additional notes:
 */
 //
 //go:inline
-func ArrayCursorHeaderVersionGet[T any](cursor ArrayCursorHeader[T]) uint64 {
+func ArrayCursorVersionGet[T any](cursor ArrayCursor[T]) uint64 {
 	return cursor.header.version
+}
+
+/*
+PtrAt returns a pointer to the element at the given index.
+
+This method uses the cached header pointer to access array elements, bypassing MarkRaw
+dereference overhead. It performs no bounds checking, so callers must ensure the index is valid.
+
+Use cases:
+- Direct element access in cursor-based iteration loops
+- High-performance batch operations
+- SIMD-optimized data processing
+- Zero-copy read/write operations
+
+Time complexity: O(1) - pointer arithmetic only
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- cursor must be a valid ArrayCursor created with ArrayCursorCreate
+- idx must be in range [0, cursor.header.capacity) (caller must validate)
+
+Edge cases:
+- No bounds checking is performed - caller must ensure idx is valid
+- Returns invalid pointer if idx exceeds capacity
+- Pointer becomes invalid if array memory is deallocated or unregistered
+- Modifying elements through the pointer directly affects the array data
+
+Additional notes:
+- Uses cached header pointer for maximum performance
+- Returns a pointer that can be used for both reading and writing
+- Type safety is maintained through the generic parameter T
+- The returned pointer remains valid as long as the array and cursor are valid
+- This method provides the same functionality as ArrayCursorItemPtrGetAtUnsafe
+*/
+//
+//go:inline
+func (c *ArrayCursor[T]) PtrAt(idx uint64) *T {
+	return ArrayCursorItemPtrGetAtUnsafe[T](*c, idx)
+}
+
+/*
+Capacity returns the number of elements that can be stored in the array.
+
+This method uses the cached header pointer to access the array capacity, bypassing MarkRaw
+dereference overhead. The capacity represents the maximum number of elements that can be stored,
+not the current length of valid elements in the array.
+
+Use cases:
+- Bounds checking before accessing elements
+- Loop iteration limits
+- Memory allocation planning
+- Validation of index ranges
+
+Time complexity: O(1) - returns cached value
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- cursor must be a valid ArrayCursor created with ArrayCursorCreate
+
+Edge cases:
+- Returns the array's capacity, which may be greater than the number of valid elements
+- Capacity does not change after cursor creation, even if the array is modified
+
+Additional notes:
+- Uses cached header pointer for maximum performance
+- Capacity is stored in the array header
+- The value reflects the array's capacity at the time the cursor was created
+- Type safety is maintained through the generic parameter T
+- This method provides the same functionality as ArrayCursorCapacityGet
+*/
+//
+//go:inline
+func (c *ArrayCursor[T]) Capacity() uint64 {
+	return ArrayCursorCapacityGet[T](*c)
 }
