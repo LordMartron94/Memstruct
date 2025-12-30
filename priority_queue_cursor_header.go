@@ -264,6 +264,46 @@ func PriorityQueueCursorHeaderIsEmpty[T any](cursor PriorityQueueCursorHeader[T]
 }
 
 /*
+PriorityQueueCursorHeaderPeek returns the minimum element without removing it.
+
+This function uses the cached header pointer to peek at the minimum element, bypassing MarkRaw
+dereference overhead. It requires no comparator function since it only reads the root element.
+
+Use cases:
+- Cursor-based priority queue peek operations
+- Checking minimum element without modifying queue
+- Conditional operations based on queue minimum
+
+Time complexity: O(1) - direct access to root element
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- cursor must be a valid PriorityQueueCursorHeader created with PriorityQueueCursorHeaderCreate
+- PriorityQueue must not be empty
+- PriorityQueue memory must remain valid and unmoved
+
+Edge cases:
+- Returns error if priority queue is empty
+- Returns zero value and error if queue is empty
+- Undefined behavior if cursor is invalid or memory has moved
+
+Additional notes:
+- Uses cached header pointer for maximum performance
+- Performs bounds checking before peek
+- Does not modify the queue
+- Type safety is maintained through the generic parameter T
+*/
+//
+//go:inline
+func PriorityQueueCursorHeaderPeek[T any](cursor PriorityQueueCursorHeader[T]) (T, error) {
+	if cursor.header.length == 0 {
+		var zero T
+		return zero, fmt.Errorf("priority queue empty")
+	}
+	return ArrayItemGetAtUnsafe[T](cursor.header.data, 0), nil
+}
+
+/*
 PriorityQueueCursorHeaderVersionGet returns the current version of the priority queue.
 
 This function uses the cached header pointer to access the priority queue version, bypassing MarkRaw
