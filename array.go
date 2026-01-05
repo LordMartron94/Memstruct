@@ -6,14 +6,218 @@ import (
 	"unsafe"
 )
 
+/*
+ArrayHeaderRequiredBytesGet returns the number of bytes required to store the Array header structure.
+
+This function calculates the size of the Array header only, excluding the data region.
+It is useful when allocating memory separately for the header and data regions, or when
+calculating memory requirements for non-contiguous memory layouts.
+
+Use cases:
+- Calculating memory requirements for separated header/data allocations
+- Memory pool implementations that store headers separately
+- Custom allocators that need precise header size information
+- Memory layout planning and optimization
+
+Time complexity: O(1) - compile-time constant evaluation
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- Type T must be a valid Go type
+
+Edge cases:
+- Returns the size of the Array struct itself, which includes metadata fields
+- Does not include padding or alignment considerations (use ArrayHeaderRequiredAlignmentGet for alignment)
+- Size is determined at compile time based on the Array struct definition
+
+Additional notes:
+- The returned size is the exact size of the Array header structure
+- For total memory requirements including data, use ArrayRequiredBytesGet
+*/
+func ArrayHeaderRequiredBytesGet[T any]() uint64 {
+	headerSize := memcore.SizeOf[Array[T]]()
+	return headerSize
+}
+
+/*
+ArrayRequiredBytesGet returns the total number of bytes required for an array with the specified capacity,
+assuming a contiguous memory layout where the header is immediately followed by the data region.
+
+This function calculates the combined size of the Array header and the data region for a contiguous
+memory layout. For non-contiguous layouts (where header and data are separated), calculate header
+and data sizes separately using ArrayHeaderRequiredBytesGet and item size calculations.
+
+Use cases:
+- Calculating memory requirements for contiguous array allocations
+- Memory pool sizing and capacity planning
+- Allocator implementations that need total size information
+- Memory layout optimization for cache efficiency
+
+Time complexity: O(1) - simple arithmetic operations
+Space complexity: O(1) - only local variables used
+
+Prerequisites:
+- Type T must be a valid Go type
+- capacity must be a valid non-negative integer
+
+Edge cases:
+- Returns headerSize + itemSize*capacity for contiguous layouts
+- Does not account for alignment padding between header and data (handled by alignment requirements)
+- For non-contiguous layouts, this calculation is incorrect; use ArrayHeaderRequiredBytesGet separately
+
+Additional notes:
+- This function assumes contiguous memory layout (header immediately followed by data)
+- For separated header/data layouts, calculate sizes separately
+- The actual allocated size may need to account for alignment requirements (use ArrayRequiredAlignmentGet)
+*/
 func ArrayRequiredBytesGet[T any](capacity uint64) uint64 {
 	headerSize := memcore.SizeOf[Array[T]]()
 	itemSize := memcore.SizeOf[T]()
-	return headerSize + itemSize*capacity
+	
+	// Align data offset to ensure data region meets alignment requirements
+	// This padding is necessary for SIMD operations which require specific alignment
+	dataAlignment := ArrayDataRequiredAlignmentGet[T]()
+	alignedDataOffset := memcore.AlignUp(uint64(headerSize), dataAlignment)
+	
+	return alignedDataOffset + itemSize*capacity
 }
 
+/*
+ArrayHeaderRequiredAlignmentGet returns the required memory alignment for the Array header structure.
+
+The alignment requirement ensures that the Array header is placed at a memory address that is
+a multiple of the returned value. This is typically the alignment requirement of the element
+type T, which ensures optimal memory access patterns and cache efficiency.
+
+Use cases:
+- Memory allocation alignment calculations
+- Memory pool implementations requiring proper alignment
+- Custom allocators that need alignment information
+- Cache-optimized memory layout planning
+
+Time complexity: O(1) - compile-time constant evaluation
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- Type T must be a valid Go type
+
+Edge cases:
+- Returns the alignment requirement of type T, which matches the header's alignment needs
+- Alignment values are always powers of two
+- Zero alignment is never returned (minimum alignment is 1)
+
+Additional notes:
+- The alignment is determined by the element type T, not the Array struct itself
+- This ensures that when the header is properly aligned, subsequent data access is also aligned
+- For total alignment requirements including data, use ArrayRequiredAlignmentGet
+*/
+func ArrayHeaderRequiredAlignmentGet[T any]() uint64 {
+	return memcore.AlignOf[T]()
+}
+
+/*
+ArrayRequiredAlignmentGet returns the required memory alignment for an array allocation,
+accounting for both the header and data region alignment requirements.
+
+The returned alignment is the maximum of the element type alignment and the Array header
+alignment, ensuring that both the header and all data elements are properly aligned for
+optimal memory access patterns and cache efficiency.
+
+Use cases:
+- Memory allocation alignment calculations for contiguous arrays
+- Allocator implementations requiring proper alignment
+- Cache-optimized memory layout planning
+- SIMD operations requiring specific alignment
+
+Time complexity: O(1) - simple comparison operation
+Space complexity: O(1) - only local variables used
+
+Prerequisites:
+- Type T must be a valid Go type
+
+Edge cases:
+- Returns the maximum of element type alignment and Array header alignment
+- Alignment values are always powers of two
+- Minimum returned alignment is 1 (never zero)
+
+Additional notes:
+- This function assumes contiguous memory layout
+- The alignment ensures both header and data elements are properly aligned
+- For separated header/data layouts, use ArrayHeaderRequiredAlignmentGet for header alignment
+*/
 func ArrayRequiredAlignmentGet[T any]() uint64 {
 	return max(memcore.AlignOf[T](), memcore.AlignOf[Array[T]]())
+}
+
+/*
+ArrayDataRequiredBytesGet returns the number of bytes required to store the data region
+of an array with the specified capacity, excluding the header structure.
+
+This function calculates the size of the data region only (capacity * sizeof(T)), which
+is useful when allocating memory separately for the header and data regions, or when
+calculating memory requirements for non-contiguous memory layouts.
+
+Use cases:
+- Calculating memory requirements for separated header/data allocations
+- Memory pool implementations that store headers separately
+- Custom allocators that need precise data region size information
+- Memory layout planning and optimization for data-only regions
+
+Time complexity: O(1) - simple arithmetic operation
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- Type T must be a valid Go type
+- capacity must be a valid non-negative integer
+
+Edge cases:
+- Returns 0 if capacity is 0 (no data region needed)
+- Does not include header size (use ArrayHeaderRequiredBytesGet for header size)
+- Does not account for alignment padding (use ArrayDataRequiredAlignmentGet for alignment)
+
+Additional notes:
+- The returned size is the exact size needed for capacity elements of type T
+- For total memory requirements including header, use ArrayRequiredBytesGet
+- This function is useful when header and data are allocated separately
+*/
+func ArrayDataRequiredBytesGet[T any](capacity uint64) uint64 {
+	itemSize := memcore.SizeOf[T]()
+	return itemSize * capacity
+}
+
+/*
+ArrayDataRequiredAlignmentGet returns the required memory alignment for the Array data region.
+
+The alignment requirement ensures that the data region is placed at a memory address that is
+a multiple of the returned value. This is the alignment requirement of the element type T,
+ensuring optimal memory access patterns and cache efficiency for data elements.
+
+Use cases:
+- Memory allocation alignment calculations for data-only regions
+- Memory pool implementations requiring proper data alignment
+- Custom allocators that need data region alignment information
+- SIMD operations requiring specific data alignment
+- Cache-optimized memory layout planning for data regions
+
+Time complexity: O(1) - compile-time constant evaluation
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- Type T must be a valid Go type
+
+Edge cases:
+- Returns the alignment requirement of type T (the element type)
+- Alignment values are always powers of two
+- Zero alignment is never returned (minimum alignment is 1)
+
+Additional notes:
+- The alignment is determined by the element type T
+- This ensures that all data elements are properly aligned for efficient access
+- For total alignment requirements including header, use ArrayRequiredAlignmentGet
+- This function is useful when header and data are allocated separately
+*/
+func ArrayDataRequiredAlignmentGet[T any]() uint64 {
+	return memcore.AlignOf[T]()
 }
 
 // Array is a custom array implementation built on top of memcore.
@@ -24,6 +228,7 @@ type Array[T any] struct {
 	setFnID memcore.FunctionID
 
 	itemSize uintptr
+	version  uint64
 }
 
 // ArrayView represents a view around an array.
@@ -34,22 +239,131 @@ type ArrayView[T any] struct {
 	readonly         bool
 }
 
-// ArrayInitializeAt initializes an instance of an array for type T at a specific memory address.
-// Ensure the address is properly aligned and has the right size.
-//
-// ⚠️ capacity is in elements, not bytes.
+/*
+ArrayInitializeAt initializes an array instance for type T at a specific memory address,
+assuming a contiguous memory layout where the header is immediately followed by the data region.
+
+This function sets up the array header and calculates the data address offset based on the
+assumption that data immediately follows the header in memory. The memory at arrayAddr must
+be large enough to accommodate both the header and the data region.
+
+Use cases:
+- Standard array initialization with contiguous memory layout
+- Memory pool implementations with pre-allocated contiguous blocks
+- Cache-optimized data structures requiring contiguous memory
+- Simple array creation when memory layout is not a concern
+
+Time complexity: O(1) - constant time initialization
+Space complexity: O(1) - only local variables used
+
+Prerequisites:
+- arrayAddr must point to a valid, properly aligned memory address
+- The memory region must be large enough to hold header + capacity*sizeof(T) bytes
+- Memory must be properly aligned according to ArrayRequiredAlignmentGet
+- capacity is specified in elements, not bytes
+
+Edge cases:
+- capacity of 0 is valid and creates an array with no data region
+- The data region starts immediately after the header (offset equals header size)
+- Version is initialized to 1
+
+Additional notes:
+- This function assumes contiguous memory layout (header immediately followed by data)
+- For non-contiguous layouts, use ArrayInitializeWithSeparatedHeaderAndData
+- The function registers a type-specific movement function for efficient element copying
+*/
 func ArrayInitializeAt[T any](arrayAddr memcore.MarkRaw, capacity uint64) {
 	headerSize := memcore.SizeOf[Array[T]]()
 
 	itemSize := memcore.SizeOf[T]()
 	arrayPtr := memcore.MemcoreMarkDereferenceObject[Array[T]](arrayAddr)
+	
+	// Verify base address alignment - ensures end-to-end alignment
+	// Even with aligned offset, if base address isn't aligned, data won't be aligned
+	basePtr := uintptr(unsafe.Pointer(arrayPtr))
+	requiredAlign := ArrayRequiredAlignmentGet[T]()
+	if basePtr%uintptr(requiredAlign) != 0 {
+		panic(fmt.Sprintf("ArrayInitializeAt: base address not aligned: address %#x, required alignment %d, misalignment %d",
+			basePtr, requiredAlign, basePtr%uintptr(requiredAlign)))
+	}
+	
+	// Align data offset to ensure data region meets alignment requirements
+	// This is critical for SIMD operations which require 32-byte alignment
+	dataAlignment := ArrayDataRequiredAlignmentGet[T]()
+	alignedDataOffset := memcore.AlignUp(uint64(headerSize), dataAlignment)
+	
 	*arrayPtr = Array[T]{
-		dataAddrOffset: uintptr(headerSize),
+		dataAddrOffset: uintptr(alignedDataOffset),
 		capacity:       capacity,
 		itemSize:       uintptr(itemSize),
+		version:        1,
 	}
 
-	arrayPtr.setFnID = memcore.MemcoreFunctionRegisterTyped(
+	arrayPtr.setFnID = memcore.MemcoreFunctionRegisterOrGet(
+		getMovementFunc[T](itemSize),
+	)
+}
+
+/*
+ArrayInitializeWithSeparatedHeaderAndData initializes an array instance with the header and data
+stored at separate, non-contiguous memory addresses.
+
+This function is used when the array header and data region are allocated in different memory
+locations, allowing for flexible memory layouts such as memory pools, custom allocators, or
+interleaved data structures where headers and data are stored separately.
+
+Use cases:
+- Memory pools where headers are stored in a separate metadata region
+- Custom allocators that manage header and data allocations independently
+- Interleaved data structures where multiple headers share a common data region
+- Memory-constrained environments requiring precise control over memory layout
+
+Time complexity: O(1) - constant time initialization
+Space complexity: O(1) - only local variables used
+
+Prerequisites:
+- headerAddr must point to a valid, properly aligned memory address for the Array header
+- dataAddr must point to a valid, properly aligned memory address for the data region
+- The data region must have sufficient capacity for the specified number of elements
+- Both addresses must be within memory managed by memcore
+
+Edge cases:
+- dataAddr can be located before or after headerAddr in memory (offset can be negative or positive)
+- The offset is calculated as the difference between header and data addresses
+- This method allows non-contiguous memory layouts, unlike ArrayInitializeAt which assumes contiguous layout
+
+Additional notes:
+- The dataAddrOffset field stores the byte offset from the header address to the data address
+- This offset can be negative if data is located before the header in memory
+- After initialization, all standard Array operations work identically regardless of memory layout
+*/
+func ArrayInitializeWithSeparatedHeaderAndData[T any](headerAddr memcore.MarkRaw, dataAddr memcore.MarkRaw, capacity uint64) {
+	itemSize := memcore.SizeOf[T]()
+	arrayPtr := memcore.MemcoreMarkDereferenceObject[Array[T]](headerAddr)
+
+	headerPtr := uintptr(unsafe.Pointer(arrayPtr))
+	dataPtr := uintptr(memcore.MemcoreMarkDereference(dataAddr))
+
+	// Verify data alignment - critical for SIMD operations
+	// This ensures the data region meets alignment requirements
+	dataAlignment := ArrayDataRequiredAlignmentGet[T]()
+	if dataPtr%uintptr(dataAlignment) != 0 {
+		panic(fmt.Sprintf("ArrayInitializeWithSeparatedHeaderAndData: data address not aligned: address %#x, required alignment %d, misalignment %d",
+			dataPtr, dataAlignment, dataPtr%uintptr(dataAlignment)))
+	}
+
+	// Calculate offset: dataPtr - headerPtr so that headerPtr + offset = dataPtr
+	// Previous calculation was reversed (headerPtr - dataPtr), which was incorrect
+	dataAddrOffset := dataPtr - headerPtr
+
+	*arrayPtr = Array[T]{
+		dataAddrOffset: dataAddrOffset,
+		capacity:       capacity,
+		itemSize:       uintptr(itemSize),
+		version:        1,
+	}
+
+	arrayPtr.setFnID = memcore.MemcoreFunctionRegisterOrGet(
 		getMovementFunc[T](itemSize),
 	)
 }
@@ -61,24 +375,109 @@ func ArrayInitializeFrom[T any](arrayAddr memcore.MarkRaw, src memcore.MarkRaw, 
 	return ArrayCopyFrom[T](arrayAddr, src, 0)
 }
 
-// ArraySnapshotCreate creates a deep copy of an array at a new memory location
-// defined by the destination pointer (which points to the start of the new array header).
-// It copies both the header and the data that follow it, maintaining the same relative layout.
+/*
+ArraySnapshotCreate creates a deep copy of an array at a new memory location, preserving
+the memory layout (contiguous or non-contiguous) of the source array.
+
+This function creates a complete snapshot of the array, copying both the header and data
+region. For contiguous arrays, it copies the header and data as a single block. For
+non-contiguous arrays, it copies the header and data separately to maintain the same
+memory layout in the destination.
+
+Use cases:
+- Creating checkpoint/restore points for state management
+- Deep copying arrays for backup purposes
+- Implementing undo/redo functionality
+- State serialization and deserialization
+
+Time complexity: O(n) - where n is the total size of header + data region
+Space complexity: O(1) - only local variables used (destination memory must be pre-allocated)
+
+Prerequisites:
+- dest must point to a valid, properly aligned memory address
+- The destination memory must be large enough to accommodate the array (header + data)
+- Both dest and instance must be valid Array instances of the same type T
+- Both arrays must live in memory managed by memcore
+
+Edge cases:
+- Handles both contiguous and non-contiguous memory layouts automatically
+- Preserves the exact memory layout of the source array
+- Returns dest on success
+- The destination array will have the same capacity and memory layout as the source
+
+Additional notes:
+- This function automatically detects whether the source array uses contiguous or non-contiguous layout
+- For contiguous arrays, copies header + data as a single block for efficiency
+- For non-contiguous arrays, copies header and data separately to preserve layout
+- The version number is copied but not reset (snapshot preserves state)
+*/
 func ArraySnapshotCreate[T any](dest memcore.MarkRaw, instance memcore.MarkRaw) memcore.MarkRaw {
 	arrayPtr := memcore.MemcoreMarkDereferenceObjectUnsafe[Array[T]](instance)
-	totalSize := ArrayRequiredBytesGet[T](arrayPtr.capacity)
 
-	srcAddr := memcore.MemcoreMarkDereference(instance)
-	dstAddr := memcore.MemcoreMarkDereference(dest)
+	if arrayIsContiguous(arrayPtr) {
+		// Contiguous layout: copy header + data as single block
+		totalSize := ArrayRequiredBytesGet[T](arrayPtr.capacity)
+		srcAddr := memcore.MemcoreMarkDereference(instance)
+		dstAddr := memcore.MemcoreMarkDereference(dest)
+		memcore.MemoryMoveNoHeapPointers(dstAddr, srcAddr, uintptr(totalSize))
+	} else {
+		// Non-contiguous layout: copy header and data separately
+		headerSize := memcore.SizeOf[Array[T]]()
+		dataSize := uintptr(arrayPtr.capacity) * arrayPtr.itemSize
 
-	memcore.MemoryMoveNoHeapPointers(dstAddr, srcAddr, uintptr(totalSize))
+		// Copy header
+		srcHeaderAddr := memcore.MemcoreMarkDereference(instance)
+		dstHeaderAddr := memcore.MemcoreMarkDereference(dest)
+		memcore.MemoryMoveNoHeapPointers(dstHeaderAddr, srcHeaderAddr, uintptr(headerSize))
+
+		// Copy data (preserve the same offset in destination)
+		srcBaseAddr := memcore.MemcoreMarkDereference(instance)
+		dstBaseAddr := memcore.MemcoreMarkDereference(dest)
+		srcDataAddr := arrayComputeDataAddr(arrayPtr, srcBaseAddr)
+		dstDataAddr := unsafe.Add(dstBaseAddr, arrayPtr.dataAddrOffset)
+		memcore.MemoryMoveNoHeapPointers(dstDataAddr, srcDataAddr, dataSize)
+	}
 
 	return dest
 }
 
-// ArraySnapshotRestore replaces the entire memory block of one array
-// (header + data) with that of another array of the same type and capacity.
-// Both arrays must live in manual memory managed by memcore.
+/*
+ArraySnapshotRestore replaces the entire memory content of one array with that of another
+array, preserving the memory layout of both source and destination.
+
+This function restores an array from a previously created snapshot. It copies both the
+header and data region from the source to the destination. The function automatically
+handles both contiguous and non-contiguous memory layouts, ensuring the destination
+layout matches the source layout.
+
+Use cases:
+- Restoring array state from checkpoints
+- Implementing undo/redo functionality
+- State deserialization from snapshots
+- Rollback operations in transactional systems
+
+Time complexity: O(n) - where n is the total size of header + data region
+Space complexity: O(1) - only local variables used
+
+Prerequisites:
+- dest and src must point to valid, properly aligned memory addresses
+- Both arrays must have the same capacity
+- Both arrays must be of the same type T
+- Both arrays must live in memory managed by memcore
+- The destination memory must be large enough to accommodate the source array
+
+Edge cases:
+- Returns nil error if dest == src (no-op)
+- Returns error if capacities do not match
+- Handles both contiguous and non-contiguous memory layouts automatically
+- Preserves the exact memory layout of the source array in the destination
+
+Additional notes:
+- This function automatically detects whether arrays use contiguous or non-contiguous layout
+- For contiguous arrays, copies header + data as a single block for efficiency
+- For non-contiguous arrays, copies header and data separately to preserve layout
+- The destination layout will match the source layout after restoration
+*/
 func ArraySnapshotRestore[T any](dest, src memcore.MarkRaw) error {
 	dstHeader := memcore.MemcoreMarkDereferenceObjectUnsafe[Array[T]](dest)
 	srcHeader := memcore.MemcoreMarkDereferenceObjectUnsafe[Array[T]](src)
@@ -91,18 +490,68 @@ func ArraySnapshotRestore[T any](dest, src memcore.MarkRaw) error {
 		return nil
 	}
 
-	totalBytes := ArrayRequiredBytesGet[T](dstHeader.capacity)
+	if arrayIsContiguous(srcHeader) {
+		// Contiguous layout: copy header + data as single block
+		totalBytes := ArrayRequiredBytesGet[T](dstHeader.capacity)
+		dstAddr := memcore.MemcoreMarkDereferenceUnsafe(dest)
+		srcAddr := memcore.MemcoreMarkDereferenceUnsafe(src)
+		memcore.MemoryMoveNoHeapPointers(dstAddr, srcAddr, uintptr(totalBytes))
+	} else {
+		// Non-contiguous layout: copy header and data separately
+		headerSize := memcore.SizeOf[Array[T]]()
+		dataSize := uintptr(srcHeader.capacity) * srcHeader.itemSize
 
-	dstAddr := memcore.MemcoreMarkDereferenceUnsafe(dest)
-	srcAddr := memcore.MemcoreMarkDereferenceUnsafe(src)
+		// Copy header
+		dstHeaderAddr := memcore.MemcoreMarkDereferenceUnsafe(dest)
+		srcHeaderAddr := memcore.MemcoreMarkDereferenceUnsafe(src)
+		memcore.MemoryMoveNoHeapPointers(dstHeaderAddr, srcHeaderAddr, uintptr(headerSize))
 
-	memcore.MemoryMoveNoHeapPointers(dstAddr, srcAddr, uintptr(totalBytes))
+		// Copy data (preserve the same offset in destination as source)
+		dstBaseAddr := memcore.MemcoreMarkDereferenceUnsafe(dest)
+		srcBaseAddr := memcore.MemcoreMarkDereferenceUnsafe(src)
+		srcDataAddr := arrayComputeDataAddr(srcHeader, srcBaseAddr)
+		dstDataAddr := unsafe.Add(dstBaseAddr, srcHeader.dataAddrOffset)
+		memcore.MemoryMoveNoHeapPointers(dstDataAddr, srcDataAddr, dataSize)
+	}
 
 	return nil
 }
 
-// ArrayHeaderClone clones the header to the array data.
-// It will not move memory at all.
+/*
+ArrayHeaderClone copies only the Array header structure from source to destination,
+without copying any data elements.
+
+This function clones the metadata (capacity, dataAddrOffset, itemSize, version, setFnID)
+from one array to another, but does not copy the actual data elements. This is useful
+when you want to initialize a new array with the same metadata as an existing array,
+but with different or uninitialized data.
+
+Use cases:
+- Initializing arrays with the same metadata configuration
+- Resetting array metadata while preserving data
+- Copying array configuration for template-based initialization
+- Metadata synchronization between arrays
+
+Time complexity: O(1) - only struct field copy operations
+Space complexity: O(1) - only local variables used
+
+Prerequisites:
+- dest and src must point to valid Array instances of the same type T
+- Both arrays must live in memory managed by memcore
+- The destination array's data region must be valid (if dataAddrOffset is set)
+
+Edge cases:
+  - Only copies header fields; data elements are not touched
+  - The destination array's dataAddrOffset will match the source, which may point to invalid
+    data if the destination's data region is not properly set up
+  - Version number is copied, which may not reflect the actual state of destination data
+
+Additional notes:
+- This function does not validate that the destination's data region is valid
+- After cloning, the destination array will have the same capacity and metadata as source
+- The data region is not copied or validated; caller must ensure data region is valid
+- Useful for initializing arrays with the same configuration but different data
+*/
 func ArrayHeaderClone[T any](dest, src memcore.MarkRaw) {
 	dstHeader := memcore.MemcoreMarkDereferenceObjectUnsafe[Array[T]](dest)
 	srcHeader := memcore.MemcoreMarkDereferenceObjectUnsafe[Array[T]](src)
@@ -110,11 +559,41 @@ func ArrayHeaderClone[T any](dest, src memcore.MarkRaw) {
 	*dstHeader = *srcHeader
 }
 
-// ArrayCopyFrom copies the entire contents of src array into dest array,
-// starting at destStartIdx. Both arrays must have the same element type T.
-// Capacity must allow the copy, else an error is returned.
-//
-// Example: copy src[0:srcCap] → dest[destStartIdx : destStartIdx+srcCap]
+/*
+ArrayCopyFrom copies the entire contents of the source array into the destination array,
+starting at the specified destination index.
+
+This function copies all elements from the source array (from index 0 to capacity-1) into
+the destination array starting at destStartIdx. Both arrays must have the same element
+type, and the destination must have sufficient capacity to accommodate the copy operation.
+
+Use cases:
+- Copying array contents to a different location
+- Merging arrays by copying into a larger destination
+- Initializing arrays from existing array data
+- Array migration and data movement operations
+
+Time complexity: O(n) - where n is the source array capacity (number of elements copied)
+Space complexity: O(1) - only local variables used
+
+Prerequisites:
+- dest and src must point to valid Array instances of the same type T
+- Both arrays must live in memory managed by memcore
+- destStartIdx + srcCapacity must not exceed destCapacity
+- Both arrays must have the same element type T
+
+Edge cases:
+- Returns error if destination capacity is insufficient
+- Copies all elements from source (entire capacity, not just used elements)
+- Example: copy src[0:srcCap] → dest[destStartIdx : destStartIdx+srcCap]
+- Increments destination array version after successful copy
+
+Additional notes:
+- This function works with both contiguous and non-contiguous array layouts
+- The copy operation uses efficient memory move operations
+- The destination array's version is incremented to indicate modification
+- Source array version is not modified
+*/
 func ArrayCopyFrom[T any](dest memcore.MarkRaw, src memcore.MarkRaw, destStartIdx uint64) error {
 	destBase, destHeader := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[T]](dest)
 	srcBase, srcHeader := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[T]](src)
@@ -135,11 +614,47 @@ func ArrayCopyFrom[T any](dest memcore.MarkRaw, src memcore.MarkRaw, destStartId
 	totalBytes := uintptr(srcCap) * uintptr(srcHeader.itemSize)
 	memcore.MemoryMoveNoHeapPointers(dstPtr, srcPtr, totalBytes)
 
+	arrayIncrementVersion[T](dest)
 	return nil
 }
 
-// ArrayCopyFromRange copies src[from:to) into dest starting at destStartIdx.
-// Bounds are checked; both arrays must have same type T.
+/*
+ArrayCopyFromRange copies a contiguous range of elements from the source array into the
+destination array, starting at the specified destination index.
+
+This function copies elements from the source array in the range [from, to) (from inclusive,
+to exclusive) into the destination array starting at destStartIdx. Both arrays must have
+the same element type, and bounds are validated before copying.
+
+Use cases:
+- Copying a subset of array elements to another location
+- Extracting and moving specific ranges of data
+- Partial array merging operations
+- Selective data migration between arrays
+
+Time complexity: O(n) - where n is the number of elements in the range (to - from)
+Space complexity: O(1) - only local variables used
+
+Prerequisites:
+- dest and src must point to valid Array instances of the same type T
+- Both arrays must live in memory managed by memcore
+- from must be less than to (range must be valid)
+- to must not exceed source array capacity
+- destStartIdx + (to - from) must not exceed destination array capacity
+
+Edge cases:
+- Returns error if from >= to (invalid range)
+- Returns error if to exceeds source capacity
+- Returns error if destination capacity is insufficient
+- The range [from, to) is half-open (from inclusive, to exclusive)
+- Increments destination array version after successful copy
+
+Additional notes:
+- This function works with both contiguous and non-contiguous array layouts
+- The copy operation uses efficient memory move operations
+- The destination array's version is incremented to indicate modification
+- Source array version is not modified
+*/
 func ArrayCopyFromRange[T any](
 	dest memcore.MarkRaw,
 	src memcore.MarkRaw,
@@ -169,7 +684,149 @@ func ArrayCopyFromRange[T any](
 	bytes := uintptr(count) * srcHeader.itemSize
 	memcore.MemoryMoveNoHeapPointers(dstPtr, srcPtr, bytes)
 
+	arrayIncrementVersion[T](dest)
 	return nil
+}
+
+/*
+ArraySetFromSliceRange copies a contiguous range of elements from a Go slice into the array,
+starting at the specified array index.
+
+This function copies elements from the Go slice in the range [sliceStartIdx, sliceEndIdx)
+(sliceStartIdx inclusive, sliceEndIdx exclusive) into the array starting at arrayStartIdx.
+The slice and array must have the same element type, and bounds are validated before copying.
+
+Use cases:
+- Initializing arrays from Go slice data
+- Bulk data transfer from Go slices to manually managed memory
+- Efficient data migration from GC-managed to non-GC memory
+- Populating arrays from external data sources (files, network, etc.)
+
+Time complexity: O(n) - where n is the number of elements in the range (sliceEndIdx - sliceStartIdx)
+Space complexity: O(1) - only local variables used, no allocations
+
+Prerequisites:
+- array must point to a valid Array instance of type T
+- array must live in memory managed by memcore
+- sliceStartIdx must be less than sliceEndIdx (range must be valid)
+- sliceEndIdx must not exceed len(slice)
+- arrayStartIdx + (sliceEndIdx - sliceStartIdx) must not exceed array capacity
+- slice must not be empty if sliceStartIdx < sliceEndIdx
+
+Edge cases:
+- Returns error if sliceStartIdx >= sliceEndIdx (invalid range)
+- Returns error if sliceEndIdx exceeds len(slice)
+- Returns error if array capacity is insufficient
+- The range [sliceStartIdx, sliceEndIdx) is half-open (sliceStartIdx inclusive, sliceEndIdx exclusive)
+- Increments array version after successful copy
+- Empty range (sliceStartIdx == sliceEndIdx) is valid and performs no copy
+
+Additional notes:
+- This function works with both contiguous and non-contiguous array layouts
+- The copy operation uses efficient bulk memory move operations (memmove)
+- The array's version is incremented to indicate modification
+- Source slice is not modified
+- Uses unsafe pointer operations for maximum performance
+*/
+func ArraySetFromSliceRange[T any](
+	array memcore.MarkRaw,
+	slice []T,
+	sliceStartIdx uint64,
+	sliceEndIdx uint64,
+	arrayStartIdx uint64,
+) error {
+	if sliceStartIdx >= sliceEndIdx {
+		return fmt.Errorf("ArraySetFromSliceRange: sliceStartIdx must be < sliceEndIdx")
+	}
+
+	sliceLen := uint64(len(slice))
+	if sliceEndIdx > sliceLen {
+		return fmt.Errorf("ArraySetFromSliceRange: sliceEndIdx exceeds slice length")
+	}
+
+	if sliceLen == 0 {
+		return nil
+	}
+
+	arrayBase, arrayHeader := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[T]](array)
+
+	count := sliceEndIdx - sliceStartIdx
+	if arrayStartIdx+count > arrayHeader.capacity {
+		return fmt.Errorf("ArraySetFromSliceRange: insufficient array capacity")
+	}
+
+	slicePtr := unsafe.Pointer(&slice[sliceStartIdx])
+	dstPtr := unsafe.Add(arrayComputeDataAddr(arrayHeader, arrayBase), uintptr(arrayStartIdx)*arrayHeader.itemSize)
+
+	bytes := uintptr(count) * arrayHeader.itemSize
+	memcore.MemoryMoveNoHeapPointers(dstPtr, slicePtr, bytes)
+
+	arrayIncrementVersion[T](array)
+	return nil
+}
+
+/*
+ArraySetFromSliceRangeUnsafe copies a contiguous range of elements from a Go slice into the array,
+starting at the specified array index. It performs no bounds checks, so callers must ensure valid indices.
+
+This function copies elements from the Go slice in the range [sliceStartIdx, sliceEndIdx)
+(sliceStartIdx inclusive, sliceEndIdx exclusive) into the array starting at arrayStartIdx.
+The slice and array must have the same element type. No validation is performed.
+
+Use cases:
+- High-performance hot paths where bounds are guaranteed by the caller
+- Bulk data transfer in tight loops with pre-validated ranges
+- Performance-critical initialization code
+- Internal operations where safety is guaranteed by design
+
+Time complexity: O(n) - where n is the number of elements in the range (sliceEndIdx - sliceStartIdx)
+Space complexity: O(1) - only local variables used, no allocations
+
+Prerequisites:
+- array must point to a valid Array instance of type T
+- array must live in memory managed by memcore
+- sliceStartIdx must be less than sliceEndIdx (range must be valid)
+- sliceEndIdx must not exceed len(slice) (caller must validate)
+- arrayStartIdx + (sliceEndIdx - sliceStartIdx) must not exceed array capacity (caller must validate)
+- slice must not be empty if sliceStartIdx < sliceEndIdx
+
+Edge cases:
+- No validation is performed; invalid ranges may cause panics or memory corruption
+- Empty range (sliceStartIdx == sliceEndIdx) is valid and performs no copy
+- Increments array version after copy
+- The range [sliceStartIdx, sliceEndIdx) is half-open (sliceStartIdx inclusive, sliceEndIdx exclusive)
+
+Additional notes:
+- This function works with both contiguous and non-contiguous array layouts
+- The copy operation uses efficient bulk memory move operations (memmove)
+- The array's version is incremented to indicate modification
+- Source slice is not modified
+- Uses unsafe pointer operations for maximum performance
+- Caller is responsible for all bounds checking
+*/
+//go:nosplit
+//go:inline
+func ArraySetFromSliceRangeUnsafe[T any](
+	array memcore.MarkRaw,
+	slice []T,
+	sliceStartIdx uint64,
+	sliceEndIdx uint64,
+	arrayStartIdx uint64,
+) {
+	if sliceStartIdx >= sliceEndIdx {
+		return
+	}
+
+	arrayBase, arrayHeader := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[T]](array)
+
+	count := sliceEndIdx - sliceStartIdx
+	slicePtr := unsafe.Pointer(&slice[sliceStartIdx])
+	dstPtr := unsafe.Add(arrayComputeDataAddr(arrayHeader, arrayBase), uintptr(arrayStartIdx)*arrayHeader.itemSize)
+
+	bytes := uintptr(count) * arrayHeader.itemSize
+	memcore.MemoryMoveNoHeapPointers(dstPtr, slicePtr, bytes)
+
+	arrayIncrementVersion[T](array)
 }
 
 // ArrayHeaderSizeBytesGet returns the required bytes for the Array header.
@@ -299,6 +956,120 @@ func ArrayDataPtrGet[T any](array memcore.MarkRaw) unsafe.Pointer {
 	return arrayComputeDataAddr(instance, baseAddr)
 }
 
+/*
+ArrayDataAlignmentVerify checks if the data pointer of an array is properly aligned
+according to the required alignment for type T.
+
+This function performs a runtime check to verify that the data region meets alignment
+requirements. This is critical for SIMD operations which require specific alignment
+(e.g., 32-byte alignment for AVX2).
+
+Use cases:
+- Runtime validation before SIMD operations
+- Debugging alignment issues
+- Adaptive code paths that can fall back to unaligned operations
+- Testing and verification of memory layouts
+
+Time complexity: O(1) - simple bitwise operation
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- array must point to a valid Array instance
+
+Edge cases:
+- Returns false if array is invalid or data pointer is nil
+- Returns true if data pointer is aligned to required alignment
+
+Additional notes:
+- Uses bitwise modulo operation for efficient alignment check
+- Alignment check: (uintptr(dataPtr) % uintptr(requiredAlign)) == 0
+- This is a runtime check - compile-time alignment requirements are separate
+*/
+func ArrayDataAlignmentVerify[T any](array memcore.MarkRaw) bool {
+	dataPtr := ArrayDataPtrGet[T](array)
+	if dataPtr == nil {
+		return false
+	}
+	requiredAlign := ArrayDataRequiredAlignmentGet[T]()
+	return uintptr(dataPtr)%uintptr(requiredAlign) == 0
+}
+
+/*
+ArrayDataAlignmentGet returns the actual alignment of the data pointer for an array.
+
+This function finds the largest power-of-two alignment that the data pointer satisfies.
+This is useful for debugging alignment issues and adaptive code paths that can
+select different implementations based on actual alignment.
+
+Use cases:
+- Debugging alignment issues (determine why alignment checks fail)
+- Adaptive code paths that can use different SIMD instructions based on alignment
+- Testing and verification of memory layouts
+- Performance analysis (understanding alignment impact)
+
+Time complexity: O(1) - simple bitwise operations
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- array must point to a valid Array instance
+
+Edge cases:
+- Returns 0 if array is invalid or data pointer is nil
+- Returns 1 if data pointer is not aligned to any power-of-two boundary
+- Returns the largest power-of-two alignment (1, 2, 4, 8, 16, 32, 64, ...)
+
+Additional notes:
+- Uses bitwise operations to find the largest power-of-two divisor
+- Common alignments: 1 (any), 2, 4, 8, 16, 32 (AVX2), 64 (cache line)
+- This is a runtime query - compile-time alignment requirements are separate
+- The result is always a power of two
+- Algorithm: Find the lowest set bit in the address (trailing zeros)
+*/
+func ArrayDataAlignmentGet[T any](array memcore.MarkRaw) uint64 {
+	dataPtr := ArrayDataPtrGet[T](array)
+	if dataPtr == nil {
+		return 0
+	}
+	
+	ptr := uintptr(dataPtr)
+	
+	// Find the largest power-of-two alignment by finding the lowest set bit
+	// If ptr is 0, it's perfectly aligned to all boundaries, but we return 0 for nil
+	if ptr == 0 {
+		return 0
+	}
+	
+	// Find the lowest set bit (trailing zeros) using bitwise AND
+	// This gives us the largest power-of-two alignment
+	// Example: ptr = 0x1000 (4096) -> alignment = 4096 (all bits clear except alignment bits)
+	// Example: ptr = 0x1001 (4097) -> alignment = 1 (lowest bit set)
+	// Example: ptr = 0x1008 (4104) -> alignment = 8 (bits 0-2 clear, bit 3 set)
+	
+	// Check common alignments from largest to smallest
+	if (ptr & 127) == 0 {
+		return 128
+	}
+	if (ptr & 63) == 0 {
+		return 64
+	}
+	if (ptr & 31) == 0 {
+		return 32
+	}
+	if (ptr & 15) == 0 {
+		return 16
+	}
+	if (ptr & 7) == 0 {
+		return 8
+	}
+	if (ptr & 3) == 0 {
+		return 4
+	}
+	if (ptr & 1) == 0 {
+		return 2
+	}
+	return 1
+}
+
 // ArrayByteOffsetGetAt returns the offset relative to the memory region for this idx.
 // Panics if the idx is invalid.
 //
@@ -336,6 +1107,7 @@ func ArraySetAt[T any](array memcore.MarkRaw, idx uint64, value T) error {
 
 	memcore.MemcoreFunctionRetrieveTyped[setFn[T]](instance.setFnID)(itemPtr, value)
 
+	arrayIncrementVersion[T](array)
 	return nil
 }
 
@@ -349,6 +1121,7 @@ func ArraySetAtUnsafe[T any](array memcore.MarkRaw, idx uint64, value T) {
 	itemPtr := arrayGetPtrAtIdx(instance, baseAddr, idx)
 
 	memcore.MemcoreFunctionRetrieveTyped[setFn[T]](instance.setFnID)(itemPtr, value)
+	arrayIncrementVersion[T](array)
 }
 
 // ArraySetAll sets all values within the array to value T.
@@ -358,6 +1131,88 @@ func ArraySetAll[T any](array memcore.MarkRaw, v T) {
 	ArrayForEachUnsafe[T](array, func(ptr unsafe.Pointer, idx uint64) {
 		*(*T)(ptr) = v
 	})
+	arrayIncrementVersion[T](array)
+}
+
+/*
+ArraySetFromSlice copies all elements from a Go slice into the array, starting at index 0.
+
+This function is a convenience wrapper around ArraySetFromSliceRange that copies the entire
+slice (from index 0 to len(slice)) into the array starting at index 0. The slice and array
+must have the same element type, and bounds are validated before copying.
+
+Use cases:
+- Initializing arrays from Go slice data
+- Bulk data transfer from Go slices to manually managed memory
+- Efficient data migration from GC-managed to non-GC memory
+- Populating arrays from external data sources (files, network, etc.)
+
+Time complexity: O(n) - where n is len(slice) (number of elements copied)
+Space complexity: O(1) - only local variables used, no allocations
+
+Prerequisites:
+- array must point to a valid Array instance of type T
+- array must live in memory managed by memcore
+- len(slice) must not exceed array capacity
+
+Edge cases:
+- Returns error if len(slice) exceeds array capacity
+- Empty slice is valid and performs no copy
+- If len(slice) < capacity, only the first len(slice) elements are copied; remaining elements unchanged
+- Increments array version after successful copy
+
+Additional notes:
+- This function works with both contiguous and non-contiguous array layouts
+- The copy operation uses efficient bulk memory move operations (memmove)
+- The array's version is incremented to indicate modification
+- Source slice is not modified
+- Internally delegates to ArraySetFromSliceRange
+*/
+//go:inline
+func ArraySetFromSlice[T any](array memcore.MarkRaw, slice []T) error {
+	return ArraySetFromSliceRange(array, slice, 0, uint64(len(slice)), 0)
+}
+
+/*
+ArraySetFromSliceUnsafe copies all elements from a Go slice into the array, starting at index 0.
+It performs no bounds checks, so callers must ensure the slice length does not exceed array capacity.
+
+This function is a convenience wrapper around ArraySetFromSliceRangeUnsafe that copies the entire
+slice (from index 0 to len(slice)) into the array starting at index 0. The slice and array must
+have the same element type. No validation is performed.
+
+Use cases:
+- High-performance hot paths where bounds are guaranteed by the caller
+- Bulk data transfer in tight loops with pre-validated data
+- Performance-critical initialization code
+- Internal operations where safety is guaranteed by design
+
+Time complexity: O(n) - where n is len(slice) (number of elements copied)
+Space complexity: O(1) - only local variables used, no allocations
+
+Prerequisites:
+- array must point to a valid Array instance of type T
+- array must live in memory managed by memcore
+- len(slice) must not exceed array capacity (caller must validate)
+
+Edge cases:
+- No validation is performed; slice length exceeding capacity may cause memory corruption
+- Empty slice is valid and performs no copy
+- If len(slice) < capacity, only the first len(slice) elements are copied; remaining elements unchanged
+- Increments array version after copy
+
+Additional notes:
+- This function works with both contiguous and non-contiguous array layouts
+- The copy operation uses efficient bulk memory move operations (memmove)
+- The array's version is incremented to indicate modification
+- Source slice is not modified
+- Internally delegates to ArraySetFromSliceRangeUnsafe
+- Caller is responsible for all bounds checking
+*/
+//go:nosplit
+//go:inline
+func ArraySetFromSliceUnsafe[T any](array memcore.MarkRaw, slice []T) {
+	ArraySetFromSliceRangeUnsafe(array, slice, 0, uint64(len(slice)), 0)
 }
 
 // ArrayZeroAll sets all values within the array to its zero value.
@@ -369,6 +1224,7 @@ func ArrayZeroAll[T any](array memcore.MarkRaw) {
 	ArrayForEachUnsafe[T](array, func(ptr unsafe.Pointer, idx uint64) {
 		*(*T)(ptr) = zero
 	})
+	arrayIncrementVersion[T](array)
 }
 
 // ArrayForEachUnsafe calls a function for every element in the array.
@@ -499,6 +1355,7 @@ func ArrayReplaceInternalUnsafe[T any](array memcore.MarkRaw, srcIdx, destIdx ui
 	dstPtr := arrayGetPtrAtIdx(instance, baseAddr, destIdx)
 
 	memcore.MemoryMoveNoHeapPointers(dstPtr, srcPtr, instance.itemSize)
+	arrayIncrementVersion[T](array)
 }
 
 // ArrayShiftRight shifts a contiguous range of elements in the array
@@ -564,6 +1421,7 @@ func ArrayShiftRightUnsafe[T any](array memcore.MarkRaw, from, to, count uint64)
 	dstPtr := arrayGetPtrAtIdx(instance, baseAddr, from+count)
 
 	memcore.MemoryMoveNoHeapPointers(dstPtr, srcPtr, uintptr((to-from+1)*uint64(elemSize)))
+	arrayIncrementVersion[T](array)
 }
 
 // ArrayShiftLeft shifts a contiguous range of elements in the array
@@ -675,6 +1533,7 @@ func ArrayDeleteAt[T any](array memcore.MarkRaw, idx uint64) error {
 
 	currentPtr := arrayGetPtrAtIdx(instance, baseAddr, idx)
 	memcore.MemoryClearNoHeapPointers(currentPtr, uintptr(instance.itemSize))
+	arrayIncrementVersion[T](array)
 	return nil
 }
 
@@ -688,6 +1547,7 @@ func ArrayDeleteAtUnsafe[T any](array memcore.MarkRaw, idx uint64) {
 	baseAddr, instance := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[T]](array)
 	currentPtr := arrayGetPtrAtIdx(instance, baseAddr, idx)
 	memcore.MemoryClearNoHeapPointers(currentPtr, uintptr(instance.itemSize))
+	arrayIncrementVersion[T](array)
 }
 
 // ArrayClear resets the entire array's memory to 0, allowing it to be reused.
@@ -698,6 +1558,7 @@ func ArrayDeleteAtUnsafe[T any](array memcore.MarkRaw, idx uint64) {
 func ArrayClear[T any](array memcore.MarkRaw) {
 	baseAddr, instance := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[T]](array)
 	memcore.MemoryClearNoHeapPointers(arrayComputeDataAddr(instance, baseAddr), uintptr(instance.capacity)*uintptr(instance.itemSize))
+	arrayIncrementVersion[T](array)
 }
 
 // ArrayIsIdxValid checks whether the given index is valid.
@@ -706,6 +1567,128 @@ func ArrayClear[T any](array memcore.MarkRaw) {
 func ArrayIsIdxValid[T any](array memcore.MarkRaw, idx uint64) bool {
 	instance := memcore.MemcoreMarkDereferenceObject[Array[T]](array)
 	return idx < instance.capacity
+}
+
+// ArraySort sorts the array in-place.
+//
+// This implementation uses an iterative Quicksort with Median-of-Three pivot
+// selection to ensure O(n log n) performance and zero stack-overflow risk.
+//
+// The comparison function should return:
+// a < b : -1 (or negative)
+// a == b : 0
+// a > b : 1 (or positive)
+func ArraySort[T any](array memcore.MarkRaw, cmp func(a, b T) int) {
+	base, inst := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[T]](array)
+
+	capacity := inst.capacity
+	if capacity <= 1 {
+		return
+	}
+
+	dataAddr := unsafe.Add(base, inst.dataAddrOffset)
+	elemSize := uintptr(inst.itemSize)
+
+	// Manual stack for partitioning bounds. 128 elements can handle
+	// up to 2^64 elements in the worst case.
+	var stack [128]int64
+	top := -1
+
+	// Push initial bounds
+	top++
+	stack[top] = 0
+	top++
+	stack[top] = int64(capacity - 1)
+
+	for top >= 0 {
+		high := stack[top]
+		top--
+		low := stack[top]
+		top--
+
+		if low < high {
+			// Median-of-Three pivot selection
+			mid := low + (high-low)/2
+
+			// Sort low, mid, and high pointers to find the median
+			valLow := *(*T)(unsafe.Add(dataAddr, uintptr(low)*elemSize))
+			valMid := *(*T)(unsafe.Add(dataAddr, uintptr(mid)*elemSize))
+			valHigh := *(*T)(unsafe.Add(dataAddr, uintptr(high)*elemSize))
+
+			if cmp(valMid, valLow) < 0 {
+				arraySwapRaw[T](dataAddr, low, mid, elemSize)
+			}
+			if cmp(valHigh, valLow) < 0 {
+				arraySwapRaw[T](dataAddr, low, high, elemSize)
+			}
+			if cmp(valHigh, valMid) < 0 {
+				arraySwapRaw[T](dataAddr, mid, high, elemSize)
+			}
+
+			// Place pivot at high-1 for partitioning
+			arraySwapRaw[T](dataAddr, mid, high, elemSize)
+
+			pivotIdx := arrayPartitionRaw(dataAddr, low, high, elemSize, cmp)
+
+			// Push larger partition first to keep manual stack depth O(log n)
+			if pivotIdx-low > high-pivotIdx {
+				if pivotIdx-1 > low {
+					top++
+					stack[top] = low
+					top++
+					stack[top] = pivotIdx - 1
+				}
+				if pivotIdx+1 < high {
+					top++
+					stack[top] = pivotIdx + 1
+					top++
+					stack[top] = high
+				}
+			} else {
+				if pivotIdx+1 < high {
+					top++
+					stack[top] = pivotIdx + 1
+					top++
+					stack[top] = high
+				}
+				if pivotIdx-1 > low {
+					top++
+					stack[top] = low
+					top++
+					stack[top] = pivotIdx - 1
+				}
+			}
+		}
+	}
+	arrayIncrementVersion[T](array)
+}
+
+// ArraySorted returns a sorted variant of this array.
+//
+// The comparison function should return:
+// a < b : -1 (or negative)
+// a == b : 0
+// a > b : 1 (or positive)
+func ArraySorted[T any](
+	array memcore.MarkRaw,
+	targetArrayAddr memcore.MarkRaw,
+	cmp func(a, b T) int,
+) {
+	srcBase, srcInst := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[T]](array)
+	dstBase, dstInst := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[T]](targetArrayAddr)
+
+	if srcInst.capacity != dstInst.capacity {
+		panic("ArraySorted: capacity mismatch")
+	}
+
+	srcData := unsafe.Add(srcBase, srcInst.dataAddrOffset)
+	dstData := unsafe.Add(dstBase, dstInst.dataAddrOffset)
+	totalBytes := uintptr(srcInst.capacity) * uintptr(srcInst.itemSize)
+
+	memcore.MemoryMoveNoHeapPointers(dstData, srcData, totalBytes)
+
+	ArraySort[T](targetArrayAddr, cmp)
+	// Note: ArraySort already increments version, so no need to increment here
 }
 
 // -------------------------- ARRAY VIEW
@@ -979,4 +1962,109 @@ func arrayGuaranteeIdxValidity[T any](instance *Array[T], idx uint64) error {
 //go:inline
 func arrayComputeDataAddr[T any](instance *Array[T], baseAddr unsafe.Pointer) unsafe.Pointer {
 	return unsafe.Add(baseAddr, instance.dataAddrOffset)
+}
+
+//go:inline
+func arrayIsContiguous[T any](instance *Array[T]) bool {
+	headerSize := memcore.SizeOf[Array[T]]()
+	return instance.dataAddrOffset == uintptr(headerSize)
+}
+
+/*
+ArrayUpdateDataAddrOffset updates the data address offset of an array to point to a new data location.
+
+This function allows rebinding an array header to a different data region without reinitializing
+the entire array. The offset is calculated as the difference between the new data address and
+the header address, enabling efficient cursor-based iteration where a single header is reused
+and its data pointer is updated for each element.
+
+Use cases:
+- Cursor-based iteration with reusable array headers
+- Rebinding arrays to different data regions
+- Efficient sequential access patterns
+- Avoiding header reallocation in tight loops
+
+Time complexity: O(1) - single field update
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- arrayAddr must point to a valid Array instance
+- dataAddr must point to a valid memory address for the data region
+- The data region must have sufficient capacity for the array's capacity
+- Both addresses must be within memory managed by memcore
+
+Edge cases:
+- The offset can be negative if data is located before the header in memory
+- No validation is performed on data capacity or alignment
+- The array's capacity and itemSize remain unchanged
+
+Additional notes:
+- This function only updates the dataAddrOffset field, preserving all other array metadata
+- Useful for cursor-based iteration where the header is reused and data pointer is updated
+- The offset calculation follows the same pattern as ArrayInitializeWithSeparatedHeaderAndData
+- Type safety is maintained through the generic parameter T
+*/
+func ArrayUpdateDataAddrOffset[T any](arrayAddr memcore.MarkRaw, dataAddr memcore.MarkRaw) {
+	arrayPtr := memcore.MemcoreMarkDereferenceObject[Array[T]](arrayAddr)
+
+	headerPtr := uintptr(unsafe.Pointer(arrayPtr))
+	dataPtr := uintptr(memcore.MemcoreMarkDereference(dataAddr))
+
+	// Calculate offset: dataPtr - headerPtr so that headerPtr + offset = dataPtr
+	dataAddrOffset := dataPtr - headerPtr
+	arrayPtr.dataAddrOffset = dataAddrOffset
+}
+
+// ArrayVersionGet returns the current version of the array.
+//
+// Version increments on every modification to the array data, allowing cache invalidation
+// mechanisms to detect when cached values become stale.
+//
+//go:inline
+func ArrayVersionGet[T any](array memcore.MarkRaw) uint64 {
+	instance := memcore.MemcoreMarkDereferenceObjectUnsafe[Array[T]](array)
+	return instance.version
+}
+
+//go:inline
+func arrayIncrementVersion[T any](array memcore.MarkRaw) {
+	instance := memcore.MemcoreMarkDereferenceObjectUnsafe[Array[T]](array)
+	instance.version++
+}
+
+//go:inline
+func arrayPartitionRaw[T any](
+	data unsafe.Pointer,
+	low, high int64,
+	size uintptr,
+	cmp func(a, b T) int,
+) int64 {
+	pivotPtr := unsafe.Add(data, uintptr(high)*size)
+	pivot := *(*T)(pivotPtr)
+
+	i := low - 1
+	for j := low; j < high; j++ {
+		currentPtr := unsafe.Add(data, uintptr(j)*size)
+		currentVal := *(*T)(currentPtr)
+
+		if cmp(currentVal, pivot) < 0 {
+			i++
+			arraySwapRaw[T](data, i, j, size)
+		}
+	}
+	arraySwapRaw[T](data, i+1, high, size)
+	return i + 1
+}
+
+//go:inline
+func arraySwapRaw[T any](data unsafe.Pointer, i, j int64, size uintptr) {
+	if i == j {
+		return
+	}
+	ptrI := (*T)(unsafe.Add(data, uintptr(i)*size))
+	ptrJ := (*T)(unsafe.Add(data, uintptr(j)*size))
+
+	tmp := *ptrI
+	*ptrI = *ptrJ
+	*ptrJ = tmp
 }

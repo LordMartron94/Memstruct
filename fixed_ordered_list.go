@@ -35,6 +35,7 @@ type FixedOrderedList[T any] struct {
 
 	length   uint64 // number of logically occupied slots
 	capacity uint64 // total available slots
+	version  uint64
 }
 
 //
@@ -131,6 +132,7 @@ func FixedOrderedListInitializeAt[T any](listAddr memcore.MarkRaw, capacity uint
 		freeListSnapshot: freeListSnapshotPtr,
 		length:           0,
 		capacity:         capacity,
+		version:          1,
 	}
 }
 
@@ -192,6 +194,7 @@ func FixedOrderedListAppend[T any](list memcore.MarkRaw, value T) error {
 	ArraySetAtUnsafe(instance.indices, instance.length, slot)
 	ArraySetAtUnsafe(instance.dataArray, slot, value)
 	instance.length++
+	fixedOrderedListIncrementVersion[T](list)
 	return nil
 }
 
@@ -202,6 +205,7 @@ func FixedOrderedListAppendUnsafe[T any](list memcore.MarkRaw, value T) {
 	ArraySetAtUnsafe(instance.indices, instance.length, slot)
 	ArraySetAtUnsafe(instance.dataArray, slot, value)
 	instance.length++
+	fixedOrderedListIncrementVersion[T](list)
 }
 
 // FixedOrderedListInsertAt inserts a value at a given logical index, shifting
@@ -218,6 +222,7 @@ func FixedOrderedListInsertAt[T any](list memcore.MarkRaw, idx uint64, value T) 
 	ArraySetAtUnsafe(instance.dataArray, slot, value)
 	fixedListInsertIndex(instance, idx, slot)
 	instance.length++
+	fixedOrderedListIncrementVersion[T](list)
 	return nil
 }
 
@@ -228,6 +233,7 @@ func FixedOrderedListInsertAtUnsafe[T any](list memcore.MarkRaw, idx uint64, val
 	ArraySetAtUnsafe(instance.dataArray, slot, value)
 	fixedListInsertIndex(instance, idx, slot)
 	instance.length++
+	fixedOrderedListIncrementVersion[T](list)
 }
 
 // FixedOrderedListDelete removes an element at logical index `idx` and
@@ -242,6 +248,7 @@ func FixedOrderedListDelete[T any](list memcore.MarkRaw, idx uint64) error {
 	fixedListRemoveIndex(instance, idx)
 	StackPushUnsafe(instance.freeList, slot)
 	instance.length--
+	fixedOrderedListIncrementVersion[T](list)
 	return nil
 }
 
@@ -252,6 +259,7 @@ func FixedOrderedListDeleteUnsafe[T any](list memcore.MarkRaw, idx uint64) {
 	fixedListRemoveIndex(instance, idx)
 	StackPushUnsafe(instance.freeList, slot)
 	instance.length--
+	fixedOrderedListIncrementVersion[T](list)
 }
 
 //
@@ -358,6 +366,7 @@ func FixedOrderedListClear[T any](list memcore.MarkRaw) {
 	instance := memcore.MemcoreMarkDereferenceObject[FixedOrderedList[T]](list)
 	StackSnapshotRestore[uint64](instance.freeList, instance.freeListSnapshot)
 	instance.length = 0
+	fixedOrderedListIncrementVersion[T](list)
 }
 
 // FixedOrderedListClearAndZero behaves like Clear but additionally wipes
@@ -367,6 +376,7 @@ func FixedOrderedListClearAndZero[T any](list memcore.MarkRaw) {
 	ArrayClear[T](instance.dataArray)
 	StackSnapshotRestore[uint64](instance.freeList, instance.freeListSnapshot)
 	instance.length = 0
+	fixedOrderedListIncrementVersion[T](list)
 }
 
 //
@@ -388,6 +398,17 @@ func FixedOrderedListCapacityGet[T any](list memcore.MarkRaw) uint64 {
 func FixedOrderedListIsIdxValid[T any](list memcore.MarkRaw, idx uint64) bool {
 	instance := memcore.MemcoreMarkDereferenceObject[FixedOrderedList[T]](list)
 	return idx < instance.length
+}
+
+// FixedOrderedListVersionGet returns the current version of the fixed ordered list.
+//
+// Version increments on every modification to the list data, allowing cache invalidation
+// mechanisms to detect when cached values become stale.
+//
+//go:inline
+func FixedOrderedListVersionGet[T any](list memcore.MarkRaw) uint64 {
+	instance := memcore.MemcoreMarkDereferenceObjectUnsafe[FixedOrderedList[T]](list)
+	return instance.version
 }
 
 //
@@ -442,4 +463,10 @@ func fixedListGuaranteeIdxReadValidity[T any](list *FixedOrderedList[T], idx uin
 		return fmt.Errorf("invalid read index %v (0 ≤ idx < %v)", idx, list.length)
 	}
 	return nil
+}
+
+//go:inline
+func fixedOrderedListIncrementVersion[T any](list memcore.MarkRaw) {
+	instance := memcore.MemcoreMarkDereferenceObjectUnsafe[FixedOrderedList[T]](list)
+	instance.version++
 }

@@ -26,6 +26,7 @@ A fixed-capacity array for any type `T`.
 - Zero-copy views and cursors
 - Snapshot/restore support
 - Efficient element access and iteration
+- Version tracking for cache invalidation (version increments on every modification)
 
 **Example:**
 ```go
@@ -47,6 +48,7 @@ A fixed-capacity array specialized for numeric types (`foundation.Numeric`).
 - Same API as `Array` but optimized for numerics
 - Used by numerical computing libraries like `blaze`
 - Supports all array operations plus numeric-specific utilities
+- Version tracking inherited from `Array` (version increments on every modification)
 
 **Example:**
 ```go
@@ -112,6 +114,7 @@ A priority queue (heap) for any comparable type.
 - Fixed capacity
 - O(log n) insert and extract
 - Custom comparison function support
+- Version tracking for cache invalidation (version increments on every modification)
 
 **Example:**
 ```go
@@ -130,6 +133,7 @@ A hash map with open addressing.
 - O(1) average case insert/lookup
 - Custom key comparison and hashing
 - Supports any key and value types
+- Version tracking for cache invalidation (version increments on every modification)
 
 **Example:**
 ```go
@@ -152,6 +156,7 @@ An ordered list that maintains insertion order.
 - Fixed capacity
 - Maintains order while allowing insertions and deletions
 - Useful for priority queues or sorted lists with fixed size
+- Version tracking for cache invalidation (version increments on every modification)
 
 ### String
 
@@ -253,6 +258,37 @@ These are essential for proper allocation:
 size := memstruct.ArrayRequiredBytesGet[MyStruct](100)
 align := memstruct.ArrayRequiredAlignmentGet[MyStruct]()
 mark := allocator.Malloc(size, align)
+```
+
+## Version Tracking
+
+Several structures (`Array`, `Vector`, `HashMap`, `PriorityQueue`, and `FixedOrderedList`) maintain a version number that increments automatically on every modification. This enables cache invalidation mechanisms in higher-level libraries (e.g., `statarch`) to detect when cached values become stale.
+
+**Version Behavior:**
+- Version starts at `1` when a structure is initialized
+- Version increments on every modification operation (SetAt, Clear, Sort, CopyFrom, Push, Pop, Insert, Delete, etc.)
+- Version can be retrieved using `*VersionGet` functions:
+  - `ArrayVersionGet[T](array memcore.MarkRaw) uint64`
+  - `VectorVersionGet[T](vector memcore.MarkRaw) uint64`
+  - `HashMapVersionGet[TKey, TValue](instance memcore.MarkRaw) uint64`
+  - `PriorityQueueVersionGet[T](queue memcore.MarkRaw) uint64`
+  - `FixedOrderedListVersionGet[T](list memcore.MarkRaw) uint64`
+- Version is preserved during snapshot/restore operations
+
+**Use Cases:**
+- Cache invalidation in statistical analysis libraries
+- Detecting data modifications in streaming scenarios
+- Ensuring data consistency in long-running processes
+
+**Example:**
+```go
+// Track version for cache invalidation
+version := memstruct.HashMapVersionGet[string, int](mapMark)
+// ... perform operations that might modify the map ...
+newVersion := memstruct.HashMapVersionGet[string, int](mapMark)
+if version != newVersion {
+    // Cache is stale, invalidate and recompute
+}
 ```
 
 ## Safety Guidelines

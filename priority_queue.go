@@ -20,6 +20,7 @@ type PriorityQueue[T any] struct {
 	data     memcore.MarkRaw // Array[T]
 	length   uint64
 	capacity uint64
+	version  uint64
 }
 
 // PriorityQueueInitializeAt initializes a priority queue at the given address.
@@ -34,6 +35,7 @@ func PriorityQueueInitializeAt[T any](addr memcore.MarkRaw, capacityElements uin
 		data:     dataMark,
 		length:   0,
 		capacity: capacityElements,
+		version:  1,
 	}
 }
 
@@ -76,6 +78,7 @@ func PriorityQueueCopyFrom[T any](dest memcore.MarkRaw, src memcore.MarkRaw) err
 	// Synchronize the length in the header
 	destHeader.length = srcHeader.length
 
+	priorityQueueIncrementVersion[T](dest)
 	return nil
 }
 
@@ -131,6 +134,7 @@ func PriorityQueueSnapshotRestore[T any](dest, src memcore.MarkRaw) error {
 func PriorityQueueClear[T any](queue memcore.MarkRaw) {
 	header := memcore.MemcoreMarkDereferenceObject[PriorityQueue[T]](queue)
 	header.length = 0
+	priorityQueueIncrementVersion[T](queue)
 }
 
 // PriorityQueueClearAndZero clears the queue, allowing it to be re-used, and zeroes the underlying memory.
@@ -139,6 +143,7 @@ func PriorityQueueClearAndZero[T any](queue memcore.MarkRaw) {
 	header.length = 0
 
 	ArrayClear[T](header.data)
+	priorityQueueIncrementVersion[T](queue)
 }
 
 // --------------------------------------------------- CORE OPERATIONS
@@ -160,6 +165,7 @@ func PriorityQueuePush[T any](queue memcore.MarkRaw, item T, less func(a, b T) b
 
 	// Restore heap property
 	pqSiftUp(instance, instance.length-1, less)
+	priorityQueueIncrementVersion[T](queue)
 	return nil
 }
 
@@ -191,6 +197,7 @@ func PriorityQueuePop[T any](queue memcore.MarkRaw, less func(a, b T) bool) (T, 
 		pqSiftDown(instance, 0, less)
 	}
 
+	priorityQueueIncrementVersion[T](queue)
 	return root, nil
 }
 
@@ -234,6 +241,17 @@ func PriorityQueueLengthGet[T any](queue memcore.MarkRaw) uint64 {
 func PriorityQueueCapacityGet[T any](queue memcore.MarkRaw) uint64 {
 	instance := memcore.MemcoreMarkDereferenceObject[PriorityQueue[T]](queue)
 	return instance.capacity
+}
+
+// PriorityQueueVersionGet returns the current version of the priority queue.
+//
+// Version increments on every modification to the priority queue data, allowing cache invalidation
+// mechanisms to detect when cached values become stale.
+//
+//go:inline
+func PriorityQueueVersionGet[T any](queue memcore.MarkRaw) uint64 {
+	instance := memcore.MemcoreMarkDereferenceObjectUnsafe[PriorityQueue[T]](queue)
+	return instance.version
 }
 
 // --------------------------------------------------- PRIVATE ALGORITHMS
@@ -329,4 +347,10 @@ func getLeftChildIdx(idx uint64) uint64 {
 //go:inline
 func getRightChildIdx(idx uint64) uint64 {
 	return (2 * idx) + 2
+}
+
+//go:inline
+func priorityQueueIncrementVersion[T any](queue memcore.MarkRaw) {
+	instance := memcore.MemcoreMarkDereferenceObjectUnsafe[PriorityQueue[T]](queue)
+	instance.version++
 }

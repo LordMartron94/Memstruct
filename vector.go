@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"foundation"
 	"memcore"
-	"sort"
 	"strings"
 	"unsafe"
 )
@@ -19,11 +18,170 @@ type Vector[T foundation.Numeric] Array[T]
 type VectorView[T foundation.Numeric] ArrayView[T]
 
 func VectorRequiredBytesGet[T foundation.Numeric](capacity uint64) uint64 {
-	return ArrayRequiredBytesGet[T](capacity)
+	// Vectors need 32-byte alignment for SIMD, so we must calculate size with correct alignment
+	// ArrayRequiredBytesGet uses ArrayDataRequiredAlignmentGet (element alignment only)
+	// which is insufficient for SIMD operations
+	headerSize := memcore.SizeOf[Array[T]]()
+	itemSize := memcore.SizeOf[T]()
+
+	// Use VectorDataRequiredAlignmentGet which ensures 32-byte alignment for SIMD
+	dataAlignment := VectorDataRequiredAlignmentGet[T]()
+	alignedDataOffset := memcore.AlignUp(uint64(headerSize), dataAlignment)
+
+	return alignedDataOffset + itemSize*capacity
 }
 
 func VectorRequiredAlignmentGet[T foundation.Numeric]() uint64 {
-	return ArrayRequiredAlignmentGet[T]()
+	headerAlign := ArrayHeaderRequiredAlignmentGet[T]()
+	dataAlign := VectorDataRequiredAlignmentGet[T]()
+	return max(headerAlign, dataAlign)
+}
+
+/*
+VectorHeaderRequiredBytesGet returns the number of bytes required to store the Vector header structure.
+
+This function wraps ArrayHeaderRequiredBytesGet for numeric types, calculating the size of the
+Vector header only, excluding the data region. It is useful when allocating memory separately
+for the header and data regions, or when calculating memory requirements for non-contiguous
+memory layouts.
+
+Use cases:
+- Calculating memory requirements for separated header/data allocations
+- Memory pool implementations that store headers separately
+- Custom allocators that need precise header size information
+- Memory layout planning and optimization
+
+Time complexity: O(1) - compile-time constant evaluation
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- Type T must be a numeric type (foundation.Numeric)
+
+Edge cases:
+- Returns the size of the Vector struct itself, which includes metadata fields
+- Does not include padding or alignment considerations (use VectorHeaderRequiredAlignmentGet for alignment)
+- Size is determined at compile time based on the Vector struct definition
+
+Additional notes:
+- The returned size is the exact size of the Vector header structure
+- For total memory requirements including data, use VectorRequiredBytesGet
+- Internally delegates to ArrayHeaderRequiredBytesGet
+*/
+func VectorHeaderRequiredBytesGet[T foundation.Numeric]() uint64 {
+	return ArrayHeaderRequiredBytesGet[T]()
+}
+
+/*
+VectorHeaderRequiredAlignmentGet returns the required memory alignment for the Vector header structure.
+
+This function wraps ArrayHeaderRequiredAlignmentGet for numeric types. The alignment requirement
+ensures that the Vector header is placed at a memory address that is a multiple of the returned
+value. This is typically the alignment requirement of the element type T, which ensures optimal
+memory access patterns and cache efficiency.
+
+Use cases:
+- Memory allocation alignment calculations
+- Memory pool implementations requiring proper alignment
+- Custom allocators that need alignment information
+- Cache-optimized memory layout planning
+
+Time complexity: O(1) - compile-time constant evaluation
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- Type T must be a numeric type (foundation.Numeric)
+
+Edge cases:
+- Returns the alignment requirement of type T, which matches the header's alignment needs
+- Alignment values are always powers of two
+- Zero alignment is never returned (minimum alignment is 1)
+
+Additional notes:
+- The alignment is determined by the element type T, not the Vector struct itself
+- This ensures that when the header is properly aligned, subsequent data access is also aligned
+- For total alignment requirements including data, use VectorRequiredAlignmentGet
+- Internally delegates to ArrayHeaderRequiredAlignmentGet
+*/
+func VectorHeaderRequiredAlignmentGet[T foundation.Numeric]() uint64 {
+	return ArrayHeaderRequiredAlignmentGet[T]()
+}
+
+/*
+VectorDataRequiredBytesGet returns the number of bytes required to store the data region
+of a vector with the specified capacity, excluding the header structure.
+
+This function wraps ArrayDataRequiredBytesGet for numeric types, calculating the size of
+the data region only (capacity * sizeof(T)). It is useful when allocating memory separately
+for the header and data regions, or when calculating memory requirements for non-contiguous
+memory layouts.
+
+Use cases:
+- Calculating memory requirements for separated header/data allocations
+- Memory pool implementations that store headers separately
+- Custom allocators that need precise data region size information
+- Memory layout planning and optimization for data-only regions
+
+Time complexity: O(1) - simple arithmetic operation
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- Type T must be a numeric type (foundation.Numeric)
+- capacity must be a valid non-negative integer
+
+Edge cases:
+- Returns 0 if capacity is 0 (no data region needed)
+- Does not include header size (use VectorHeaderRequiredBytesGet for header size)
+- Does not account for alignment padding (use VectorDataRequiredAlignmentGet for alignment)
+
+Additional notes:
+- The returned size is the exact size needed for capacity elements of type T
+- For total memory requirements including header, use VectorRequiredBytesGet
+- This function is useful when header and data are allocated separately
+- Internally delegates to ArrayDataRequiredBytesGet
+*/
+func VectorDataRequiredBytesGet[T foundation.Numeric](capacity uint64) uint64 {
+	return ArrayDataRequiredBytesGet[T](capacity)
+}
+
+/*
+VectorDataRequiredAlignmentGet returns the required memory alignment for the Vector data region.
+
+This function wraps ArrayDataRequiredAlignmentGet for numeric types. The alignment requirement
+ensures that the data region is placed at a memory address that is a multiple of the returned
+value. This is the alignment requirement of the element type T, ensuring optimal memory access
+patterns and cache efficiency for data elements.
+
+Use cases:
+- Memory allocation alignment calculations for data-only regions
+- Memory pool implementations requiring proper data alignment
+- Custom allocators that need data region alignment information
+- SIMD operations requiring specific data alignment
+- Cache-optimized memory layout planning for data regions
+
+Time complexity: O(1) - compile-time constant evaluation
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- Type T must be a numeric type (foundation.Numeric)
+
+Edge cases:
+- Returns the alignment requirement of type T (the element type)
+- Alignment values are always powers of two
+- Zero alignment is never returned (minimum alignment is 1)
+
+Additional notes:
+- The alignment is determined by the element type T
+- This ensures that all data elements are properly aligned for efficient access
+- For total alignment requirements including header, use VectorRequiredAlignmentGet
+- This function is useful when header and data are allocated separately
+- Internally delegates to ArrayDataRequiredAlignmentGet
+*/
+func VectorDataRequiredAlignmentGet[T foundation.Numeric]() uint64 {
+	// For SIMD operations (AVX2), we need at least 32-byte alignment
+	// Return the maximum of element alignment and SIMD alignment requirement
+	elementAlign := ArrayDataRequiredAlignmentGet[T]()
+	simdAlign := uint64(32) // AVX2 requirement (256-bit = 32 bytes)
+	return max(elementAlign, simdAlign)
 }
 
 func (v *Vector[T]) String() string {
@@ -49,51 +207,400 @@ func (v *Vector[T]) String() string {
 	return sb.String()
 }
 
-// VectorInitializeAt initializes an instance of an vector for type T at a specific memory address.
-// Ensure the address is properly aligned and has the right size.
-//
-// ⚠️ capacity is in elements, not bytes.
+/*
+VectorInitializeAt initializes a vector instance for numeric type T at a specific memory address,
+assuming a contiguous memory layout where the header is immediately followed by the data region.
+
+This function wraps ArrayInitializeAt for numeric types, setting up the vector header and calculating
+the data address offset based on the assumption that data immediately follows the header in memory.
+The memory at vectorAddr must be large enough to accommodate both the header and the data region.
+
+Use cases:
+- Standard vector initialization with contiguous memory layout
+- Memory pool implementations with pre-allocated contiguous blocks
+- Cache-optimized data structures requiring contiguous memory
+- Simple vector creation when memory layout is not a concern
+
+Time complexity: O(1) - constant time initialization
+Space complexity: O(1) - only local variables used
+
+Prerequisites:
+- vectorAddr must point to a valid, properly aligned memory address
+- The memory region must be large enough to hold header + capacity*sizeof(T) bytes
+- Memory must be properly aligned according to VectorRequiredAlignmentGet
+- capacity is specified in elements, not bytes
+
+Edge cases:
+- capacity of 0 is valid and creates a vector with no data region
+- The data region starts immediately after the header (offset equals header size)
+- Version is initialized to 1
+
+Additional notes:
+- This function assumes contiguous memory layout (header immediately followed by data)
+- For non-contiguous layouts, use VectorInitializeWithSeparatedHeaderAndData
+- The function registers a type-specific movement function for efficient element copying
+- Internally delegates to ArrayInitializeAt
+*/
 func VectorInitializeAt[T foundation.Numeric](vectorAddr memcore.MarkRaw, capacity uint64) {
-	ArrayInitializeAt[T](vectorAddr, capacity)
+	// Vectors need 32-byte alignment for SIMD operations, so we can't use ArrayInitializeAt
+	// which uses ArrayDataRequiredAlignmentGet (element alignment only)
+	// Instead, we implement vector-specific initialization with correct alignment
+	headerSize := memcore.SizeOf[Array[T]]()
+
+	itemSize := memcore.SizeOf[T]()
+	arrayPtr := memcore.MemcoreMarkDereferenceObject[Array[T]](vectorAddr)
+
+	// Verify base address alignment - ensures end-to-end alignment
+	// Even with aligned offset, if base address isn't aligned, data won't be aligned
+	basePtr := uintptr(unsafe.Pointer(arrayPtr))
+	requiredAlign := VectorRequiredAlignmentGet[T]()
+	if basePtr%uintptr(requiredAlign) != 0 {
+		panic(fmt.Sprintf("VectorInitializeAt: base address not aligned: address %#x, required alignment %d, misalignment %d",
+			basePtr, requiredAlign, basePtr%uintptr(requiredAlign)))
+	}
+
+	// Use VectorDataRequiredAlignmentGet which ensures 32-byte alignment for SIMD
+	// This is critical - ArrayDataRequiredAlignmentGet only returns element alignment (8 bytes for float64)
+	// but we need 32 bytes for AVX2 operations
+	dataAlignment := VectorDataRequiredAlignmentGet[T]()
+	alignedDataOffset := memcore.AlignUp(uint64(headerSize), dataAlignment)
+
+	*arrayPtr = Array[T]{
+		dataAddrOffset: uintptr(alignedDataOffset),
+		capacity:       capacity,
+		itemSize:       uintptr(itemSize),
+		version:        1,
+	}
+
+	arrayPtr.setFnID = memcore.MemcoreFunctionRegisterOrGet(
+		getMovementFunc[T](itemSize),
+	)
 }
 
-// VectorInitializeFrom initializes a new vector at vectorAddr with the contents of src.
-// Capacity must be >= src capacity.
+/*
+VectorInitializeWithSeparatedHeaderAndData initializes a vector instance with the header and data
+stored at separate, non-contiguous memory addresses.
+
+This function wraps ArrayInitializeWithSeparatedHeaderAndData for numeric types, allowing vectors
+to be initialized with flexible memory layouts where the header and data region are allocated
+in different memory locations.
+
+Use cases:
+- Memory pools where headers are stored in a separate metadata region
+- Custom allocators that manage header and data allocations independently
+- Interleaved data structures where multiple headers share a common data region
+- Memory-constrained environments requiring precise control over memory layout
+
+Time complexity: O(1) - constant time initialization
+Space complexity: O(1) - only local variables used
+
+Prerequisites:
+- headerAddr must point to a valid, properly aligned memory address for the Vector header
+- dataAddr must point to a valid, properly aligned memory address for the data region
+- The data region must have sufficient capacity for the specified number of elements
+- Both addresses must be within memory managed by memcore
+
+Edge cases:
+- dataAddr can be located before or after headerAddr in memory (offset can be negative or positive)
+- The offset is calculated as the difference between header and data addresses
+- This method allows non-contiguous memory layouts, unlike VectorInitializeAt which assumes contiguous layout
+
+Additional notes:
+- The dataAddrOffset field stores the byte offset from the header address to the data address
+- This offset can be negative if data is located before the header in memory
+- After initialization, all standard Vector operations work identically regardless of memory layout
+- Internally delegates to ArrayInitializeWithSeparatedHeaderAndData
+*/
+func VectorInitializeWithSeparatedHeaderAndData[T foundation.Numeric](headerAddr memcore.MarkRaw, dataAddr memcore.MarkRaw, capacity uint64) {
+	// Vectors need stricter alignment validation (32 bytes for SIMD)
+	// Verify data alignment before delegating to ArrayInitializeWithSeparatedHeaderAndData
+	dataPtr := uintptr(memcore.MemcoreMarkDereference(dataAddr))
+	dataAlignment := VectorDataRequiredAlignmentGet[T]() // 32 bytes for SIMD
+
+	if dataPtr%uintptr(dataAlignment) != 0 {
+		panic(fmt.Sprintf("VectorInitializeWithSeparatedHeaderAndData: data address not aligned for SIMD: address %#x, required alignment %d, misalignment %d",
+			dataPtr, dataAlignment, dataPtr%uintptr(dataAlignment)))
+	}
+
+	ArrayInitializeWithSeparatedHeaderAndData[T](headerAddr, dataAddr, capacity)
+}
+
+/*
+VectorUpdateDataAddrOffset updates the data address offset of a vector to point to a new data location.
+
+This function wraps ArrayUpdateDataAddrOffset for numeric types, allowing rebinding a vector header
+to a different data region without reinitializing the entire vector. This is useful for cursor-based
+iteration where a single vector header is reused and its data pointer is updated for each element.
+
+Use cases:
+- Cursor-based iteration with reusable vector headers
+- Rebinding vectors to different data regions
+- Efficient sequential access patterns
+- Avoiding header reallocation in tight loops
+
+Time complexity: O(1) - single field update
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- vectorAddr must point to a valid Vector instance
+- dataAddr must point to a valid memory address for the data region
+- The data region must have sufficient capacity for the vector's capacity
+- Both addresses must be within memory managed by memcore
+
+Edge cases:
+- The offset can be negative if data is located before the header in memory
+- No validation is performed on data capacity or alignment
+- The vector's capacity and itemSize remain unchanged
+
+Additional notes:
+- This function only updates the dataAddrOffset field, preserving all other vector metadata
+- Useful for cursor-based iteration where the header is reused and data pointer is updated
+- Wraps ArrayUpdateDataAddrOffset for numeric types
+- Type safety is maintained through the generic parameter T
+*/
+func VectorUpdateDataAddrOffset[T foundation.Numeric](vectorAddr memcore.MarkRaw, dataAddr memcore.MarkRaw) {
+	ArrayUpdateDataAddrOffset[T](vectorAddr, dataAddr)
+}
+
+/*
+VectorInitializeFrom initializes a new vector at vectorAddr with the contents of the source vector.
+
+This function wraps ArrayInitializeFrom for numeric types, creating a new vector and copying all
+elements from the source vector into it. The new vector must have capacity greater than or equal
+to the source vector's capacity.
+
+Use cases:
+- Creating a vector from an existing vector with different capacity
+- Vector duplication and cloning operations
+- Resizing vectors while preserving data
+- Vector migration to new memory locations
+
+Time complexity: O(n) - where n is the source vector capacity (initialization + copy)
+Space complexity: O(1) - only local variables used (destination memory must be pre-allocated)
+
+Prerequisites:
+- vectorAddr must point to a valid, properly aligned memory address
+- src must point to a valid Vector instance of the same type T
+- newCapacity must be >= source vector capacity
+- Both vectors must live in memory managed by memcore
+
+Edge cases:
+- Returns error if newCapacity is less than source capacity
+- The new vector will have the same element values as the source
+- Version is initialized to 1 in the new vector
+
+Additional notes:
+- This function first initializes the destination vector, then copies all elements
+- The source vector is not modified
+- Internally delegates to ArrayInitializeFrom
+*/
 func VectorInitializeFrom[T foundation.Numeric](vectorAddr memcore.MarkRaw, src memcore.MarkRaw, newCapacity uint64) error {
-	return VectorInitializeFrom[T](vectorAddr, src, newCapacity)
+	return ArrayInitializeFrom[T](vectorAddr, src, newCapacity)
 }
 
-// VectorSnapshotCreate creates a deep copy of an vector at a new memory location
-// defined by the destination pointer (which points to the start of the new vector header).
-// It copies both the header and the data that follow it, maintaining the same relative layout.
+/*
+VectorSnapshotCreate creates a deep copy of a vector at a new memory location, preserving
+the memory layout (contiguous or non-contiguous) of the source vector.
+
+This function wraps ArraySnapshotCreate for numeric types, creating a complete snapshot of
+the vector by copying both the header and data region. For contiguous vectors, it copies
+the header and data as a single block. For non-contiguous vectors, it copies the header
+and data separately to maintain the same memory layout in the destination.
+
+Use cases:
+- Creating checkpoint/restore points for state management
+- Deep copying vectors for backup purposes
+- Implementing undo/redo functionality
+- State serialization and deserialization
+
+Time complexity: O(n) - where n is the total size of header + data region
+Space complexity: O(1) - only local variables used (destination memory must be pre-allocated)
+
+Prerequisites:
+- dest must point to a valid, properly aligned memory address
+- The destination memory must be large enough to accommodate the vector (header + data)
+- Both dest and instance must be valid Vector instances of the same type T
+- Both vectors must live in memory managed by memcore
+
+Edge cases:
+- Handles both contiguous and non-contiguous memory layouts automatically
+- Preserves the exact memory layout of the source vector
+- Returns dest on success
+- The destination vector will have the same capacity and memory layout as the source
+
+Additional notes:
+- This function automatically detects whether the source vector uses contiguous or non-contiguous layout
+- For contiguous vectors, copies header + data as a single block for efficiency
+- For non-contiguous vectors, copies header and data separately to preserve layout
+- The version number is copied but not reset (snapshot preserves state)
+- Internally delegates to ArraySnapshotCreate
+*/
 func VectorSnapshotCreate[T foundation.Numeric](dest memcore.MarkRaw, instance memcore.MarkRaw) memcore.MarkRaw {
 	return ArraySnapshotCreate[T](dest, instance)
 }
 
-// VectorSnapshotRestore replaces the entire memory block of one vector
-// (header + data) with that of another vector of the same type and capacity.
-// Both vectors must live in manual memory managed by memcore.
+/*
+VectorSnapshotRestore replaces the entire memory content of one vector with that of another
+vector, preserving the memory layout of both source and destination.
+
+This function wraps ArraySnapshotRestore for numeric types, restoring a vector from a previously
+created snapshot. It copies both the header and data region from the source to the destination.
+The function automatically handles both contiguous and non-contiguous memory layouts, ensuring
+the destination layout matches the source layout.
+
+Use cases:
+- Restoring vector state from checkpoints
+- Implementing undo/redo functionality
+- State deserialization from snapshots
+- Rollback operations in transactional systems
+
+Time complexity: O(n) - where n is the total size of header + data region
+Space complexity: O(1) - only local variables used
+
+Prerequisites:
+- dest and src must point to valid, properly aligned memory addresses
+- Both vectors must have the same capacity
+- Both vectors must be of the same type T
+- Both vectors must live in memory managed by memcore
+- The destination memory must be large enough to accommodate the source vector
+
+Edge cases:
+- Returns nil error if dest == src (no-op)
+- Returns error if capacities do not match
+- Handles both contiguous and non-contiguous memory layouts automatically
+- Preserves the exact memory layout of the source vector in the destination
+
+Additional notes:
+- This function automatically detects whether vectors use contiguous or non-contiguous layout
+- For contiguous vectors, copies header + data as a single block for efficiency
+- For non-contiguous vectors, copies header and data separately to preserve layout
+- The destination layout will match the source layout after restoration
+- Internally delegates to ArraySnapshotRestore
+*/
 func VectorSnapshotRestore[T foundation.Numeric](dest, src memcore.MarkRaw) error {
 	return ArraySnapshotRestore[T](dest, src)
 }
 
-// VectorHeaderClone clones the header to the vector data.
-// It will not move memory at all.
+/*
+VectorHeaderClone copies only the Vector header structure from source to destination,
+without copying any data elements.
+
+This function wraps ArrayHeaderClone for numeric types, cloning the metadata (capacity,
+dataAddrOffset, itemSize, version, setFnID) from one vector to another, but does not
+copy the actual data elements. This is useful when you want to initialize a new vector
+with the same metadata as an existing vector, but with different or uninitialized data.
+
+Use cases:
+- Initializing vectors with the same metadata configuration
+- Resetting vector metadata while preserving data
+- Copying vector configuration for template-based initialization
+- Metadata synchronization between vectors
+
+Time complexity: O(1) - only struct field copy operations
+Space complexity: O(1) - only local variables used
+
+Prerequisites:
+- dest and src must point to valid Vector instances of the same type T
+- Both vectors must live in memory managed by memcore
+- The destination vector's data region must be valid (if dataAddrOffset is set)
+
+Edge cases:
+  - Only copies header fields; data elements are not touched
+  - The destination vector's dataAddrOffset will match the source, which may point to invalid
+    data if the destination's data region is not properly set up
+  - Version number is copied, which may not reflect the actual state of destination data
+
+Additional notes:
+- This function does not validate that the destination's data region is valid
+- After cloning, the destination vector will have the same capacity and metadata as source
+- The data region is not copied or validated; caller must ensure data region is valid
+- Useful for initializing vectors with the same configuration but different data
+- Internally delegates to ArrayHeaderClone
+*/
 func VectorHeaderClone[T foundation.Numeric](dest, src memcore.MarkRaw) {
 	ArrayHeaderClone[T](dest, src)
 }
 
-// VectorCopyFrom copies the entire contents of src vector into dest vector,
-// starting at destStartIdx. Both arrays must have the same element type T.
-// Capacity must allow the copy, else an error is returned.
-//
-// Example: copy src[0:srcCap] → dest[destStartIdx : destStartIdx+srcCap]
+/*
+VectorCopyFrom copies the entire contents of the source vector into the destination vector,
+starting at the specified destination index.
+
+This function wraps ArrayCopyFrom for numeric types, copying all elements from the source
+vector (from index 0 to capacity-1) into the destination vector starting at destStartIdx.
+Both vectors must have the same element type, and the destination must have sufficient
+capacity to accommodate the copy operation.
+
+Use cases:
+- Copying vector contents to a different location
+- Merging vectors by copying into a larger destination
+- Initializing vectors from existing vector data
+- Vector migration and data movement operations
+
+Time complexity: O(n) - where n is the source vector capacity (number of elements copied)
+Space complexity: O(1) - only local variables used
+
+Prerequisites:
+- dest and src must point to valid Vector instances of the same type T
+- Both vectors must live in memory managed by memcore
+- destStartIdx + srcCapacity must not exceed destCapacity
+- Both vectors must have the same element type T
+
+Edge cases:
+- Returns error if destination capacity is insufficient
+- Copies all elements from source (entire capacity, not just used elements)
+- Example: copy src[0:srcCap] → dest[destStartIdx : destStartIdx+srcCap]
+- Increments destination vector version after successful copy
+
+Additional notes:
+- This function works with both contiguous and non-contiguous vector layouts
+- The copy operation uses efficient memory move operations
+- The destination vector's version is incremented to indicate modification
+- Source vector version is not modified
+- Internally delegates to ArrayCopyFrom
+*/
 func VectorCopyFrom[T foundation.Numeric](dest memcore.MarkRaw, src memcore.MarkRaw, destStartIdx uint64) error {
 	return ArrayCopyFrom[T](dest, src, destStartIdx)
 }
 
-// VectorCopyFromRange copies src[from:to) into dest starting at destStartIdx.
-// Bounds are checked; both arrays must have same type T.
+/*
+VectorCopyFromRange copies a contiguous range of elements from the source vector into the
+destination vector, starting at the specified destination index.
+
+This function wraps ArrayCopyFromRange for numeric types, copying elements from the source
+vector in the range [from, to) (from inclusive, to exclusive) into the destination vector
+starting at destStartIdx. Both vectors must have the same element type, and bounds are
+validated before copying.
+
+Use cases:
+- Copying a subset of vector elements to another location
+- Extracting and moving specific ranges of data
+- Partial vector merging operations
+- Selective data migration between vectors
+
+Time complexity: O(n) - where n is the number of elements in the range (to - from)
+Space complexity: O(1) - only local variables used
+
+Prerequisites:
+- dest and src must point to valid Vector instances of the same type T
+- Both vectors must live in memory managed by memcore
+- from must be less than to (range must be valid)
+- to must not exceed source vector capacity
+- destStartIdx + (to - from) must not exceed destination vector capacity
+
+Edge cases:
+- Returns error if from >= to (invalid range)
+- Returns error if to exceeds source capacity
+- Returns error if destination capacity is insufficient
+- The range [from, to) is half-open (from inclusive, to exclusive)
+- Increments destination vector version after successful copy
+
+Additional notes:
+- This function works with both contiguous and non-contiguous vector layouts
+- The copy operation uses efficient memory move operations
+- The destination vector's version is incremented to indicate modification
+- Source vector version is not modified
+- Internally delegates to ArrayCopyFromRange
+*/
 func VectorCopyFromRange[T foundation.Numeric](
 	dest memcore.MarkRaw,
 	src memcore.MarkRaw,
@@ -102,16 +609,176 @@ func VectorCopyFromRange[T foundation.Numeric](
 	return ArrayCopyFromRange[T](dest, src, from, to, destStartIdx)
 }
 
-// VectorHeaderSizeBytesGet returns the required bytes for the Vector header.
-//
+/*
+VectorSetFromSliceRange copies a contiguous range of elements from a Go slice into the vector,
+starting at the specified vector index.
+
+This function wraps ArraySetFromSliceRange for numeric types, copying elements from the Go slice
+in the range [sliceStartIdx, sliceEndIdx) (sliceStartIdx inclusive, sliceEndIdx exclusive) into
+the vector starting at vectorStartIdx. The slice and vector must have the same element type,
+and bounds are validated before copying.
+
+Use cases:
+- Initializing vectors from Go slice data
+- Bulk data transfer from Go slices to manually managed memory
+- Efficient data migration from GC-managed to non-GC memory
+- Populating vectors from external data sources (files, network, etc.)
+
+Time complexity: O(n) - where n is the number of elements in the range (sliceEndIdx - sliceStartIdx)
+Space complexity: O(1) - only local variables used, no allocations
+
+Prerequisites:
+- vector must point to a valid Vector instance of type T
+- vector must live in memory managed by memcore
+- sliceStartIdx must be less than sliceEndIdx (range must be valid)
+- sliceEndIdx must not exceed len(slice)
+- vectorStartIdx + (sliceEndIdx - sliceStartIdx) must not exceed vector capacity
+- slice must not be empty if sliceStartIdx < sliceEndIdx
+
+Edge cases:
+- Returns error if sliceStartIdx >= sliceEndIdx (invalid range)
+- Returns error if sliceEndIdx exceeds len(slice)
+- Returns error if vector capacity is insufficient
+- The range [sliceStartIdx, sliceEndIdx) is half-open (sliceStartIdx inclusive, sliceEndIdx exclusive)
+- Increments vector version after successful copy
+- Empty range (sliceStartIdx == sliceEndIdx) is valid and performs no copy
+
+Additional notes:
+- This function works with both contiguous and non-contiguous vector layouts
+- The copy operation uses efficient bulk memory move operations (memmove)
+- The vector's version is incremented to indicate modification
+- Source slice is not modified
+- Internally delegates to ArraySetFromSliceRange
+*/
+func VectorSetFromSliceRange[T foundation.Numeric](
+	vector memcore.MarkRaw,
+	slice []T,
+	sliceStartIdx uint64,
+	sliceEndIdx uint64,
+	vectorStartIdx uint64,
+) error {
+	return ArraySetFromSliceRange[T](vector, slice, sliceStartIdx, sliceEndIdx, vectorStartIdx)
+}
+
+/*
+VectorSetFromSliceRangeUnsafe copies a contiguous range of elements from a Go slice into the vector,
+starting at the specified vector index. It performs no bounds checks, so callers must ensure valid indices.
+
+This function wraps ArraySetFromSliceRangeUnsafe for numeric types, copying elements from the Go slice
+in the range [sliceStartIdx, sliceEndIdx) (sliceStartIdx inclusive, sliceEndIdx exclusive) into
+the vector starting at vectorStartIdx. The slice and vector must have the same element type.
+No validation is performed.
+
+Use cases:
+- High-performance hot paths where bounds are guaranteed by the caller
+- Bulk data transfer in tight loops with pre-validated ranges
+- Performance-critical initialization code
+- Internal operations where safety is guaranteed by design
+
+Time complexity: O(n) - where n is the number of elements in the range (sliceEndIdx - sliceStartIdx)
+Space complexity: O(1) - only local variables used, no allocations
+
+Prerequisites:
+- vector must point to a valid Vector instance of type T
+- vector must live in memory managed by memcore
+- sliceStartIdx must be less than sliceEndIdx (range must be valid)
+- sliceEndIdx must not exceed len(slice) (caller must validate)
+- vectorStartIdx + (sliceEndIdx - sliceStartIdx) must not exceed vector capacity (caller must validate)
+- slice must not be empty if sliceStartIdx < sliceEndIdx
+
+Edge cases:
+- No validation is performed; invalid ranges may cause panics or memory corruption
+- Empty range (sliceStartIdx == sliceEndIdx) is valid and performs no copy
+- Increments vector version after copy
+- The range [sliceStartIdx, sliceEndIdx) is half-open (sliceStartIdx inclusive, sliceEndIdx exclusive)
+
+Additional notes:
+- This function works with both contiguous and non-contiguous vector layouts
+- The copy operation uses efficient bulk memory move operations (memmove)
+- The vector's version is incremented to indicate modification
+- Source slice is not modified
+- Internally delegates to ArraySetFromSliceRangeUnsafe
+- Caller is responsible for all bounds checking
+*/
+//go:nosplit
 //go:inline
+func VectorSetFromSliceRangeUnsafe[T foundation.Numeric](
+	vector memcore.MarkRaw,
+	slice []T,
+	sliceStartIdx uint64,
+	sliceEndIdx uint64,
+	vectorStartIdx uint64,
+) {
+	ArraySetFromSliceRangeUnsafe[T](vector, slice, sliceStartIdx, sliceEndIdx, vectorStartIdx)
+}
+
+/*
+VectorHeaderSizeBytesGet returns the number of bytes required to store the Vector header structure.
+
+This function wraps ArrayHeaderSizeBytesGet for numeric types, calculating the size of the
+Vector header only, excluding the data region. It is useful when allocating memory separately
+for the header and data regions, or when calculating memory requirements for non-contiguous
+memory layouts.
+
+Use cases:
+- Calculating memory requirements for separated header/data allocations
+- Memory pool implementations that store headers separately
+- Custom allocators that need precise header size information
+- Memory layout planning and optimization
+
+Time complexity: O(1) - compile-time constant evaluation
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- Type T must be a numeric type (foundation.Numeric)
+
+Edge cases:
+- Returns the size of the Vector struct itself, which includes metadata fields
+- Does not include padding or alignment considerations (use VectorHeaderAlignmentGet for alignment)
+- Size is determined at compile time based on the Vector struct definition
+
+Additional notes:
+- The returned size is the exact size of the Vector header structure
+- For total memory requirements including data, use VectorRequiredBytesGet
+- This is an alias for VectorHeaderRequiredBytesGet (both functions return the same value)
+- Internally delegates to ArrayHeaderSizeBytesGet
+*/
 func VectorHeaderSizeBytesGet[T foundation.Numeric]() uint64 {
 	return ArrayHeaderSizeBytesGet[T]()
 }
 
-// VectorHeaderAlignmentGet returns the required alignment for the Vector header.
-//
-//go:inline
+/*
+VectorHeaderAlignmentGet returns the required memory alignment for the Vector header structure.
+
+This function wraps ArrayHeaderAlignmentGet for numeric types. The alignment requirement ensures
+that the Vector header is placed at a memory address that is a multiple of the returned value.
+This is typically the alignment requirement of the element type T, which ensures optimal memory
+access patterns and cache efficiency.
+
+Use cases:
+- Memory allocation alignment calculations
+- Memory pool implementations requiring proper alignment
+- Custom allocators that need alignment information
+- Cache-optimized memory layout planning
+
+Time complexity: O(1) - compile-time constant evaluation
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- Type T must be a numeric type (foundation.Numeric)
+
+Edge cases:
+- Returns the alignment requirement of type T, which matches the header's alignment needs
+- Alignment values are always powers of two
+- Zero alignment is never returned (minimum alignment is 1)
+
+Additional notes:
+- The alignment is determined by the element type T, not the Vector struct itself
+- This ensures that when the header is properly aligned, subsequent data access is also aligned
+- For total alignment requirements including data, use VectorRequiredAlignmentGet
+- This is an alias for VectorHeaderRequiredAlignmentGet (both functions return the same value)
+- Internally delegates to ArrayHeaderAlignmentGet
+*/
 func VectorHeaderAlignmentGet[T foundation.Numeric]() uint64 {
 	return ArrayHeaderAlignmentGet[T]()
 }
@@ -138,6 +805,16 @@ func VectorViewGetUnsafe[T foundation.Numeric](array memcore.MarkRaw, from, to u
 //go:inline
 func VectorCapacityGet[T foundation.Numeric](vector memcore.MarkRaw) uint64 {
 	return ArrayCapacityGet[T](vector)
+}
+
+// VectorVersionGet returns the current version of the vector.
+//
+// Version increments on every modification to the vector data, allowing cache invalidation
+// mechanisms to detect when cached values become stale.
+//
+//go:inline
+func VectorVersionGet[T foundation.Numeric](vector memcore.MarkRaw) uint64 {
+	return ArrayVersionGet[T](vector)
 }
 
 // VectorItemGetAt returns T at idx within the vector.
@@ -189,6 +866,78 @@ func VectorDataPtrGet[T foundation.Numeric](array memcore.MarkRaw) unsafe.Pointe
 	return ArrayDataPtrGet[T](array)
 }
 
+/*
+VectorDataAlignmentVerify checks if the data pointer of a vector is properly aligned
+according to the required alignment for numeric type T (including SIMD requirements).
+
+This function wraps ArrayDataAlignmentVerify for numeric types, but uses
+VectorDataRequiredAlignmentGet which ensures 32-byte alignment for SIMD operations.
+
+Use cases:
+- Runtime validation before SIMD operations
+- Debugging alignment issues in vector operations
+- Adaptive code paths that can fall back to unaligned operations
+- Testing and verification of vector memory layouts
+
+Time complexity: O(1) - simple bitwise operation
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- vector must point to a valid Vector instance
+
+Edge cases:
+- Returns false if vector is invalid or data pointer is nil
+- Returns true if data pointer is aligned to required alignment (32 bytes for SIMD)
+
+Additional notes:
+- Uses VectorDataRequiredAlignmentGet which ensures 32-byte alignment for SIMD
+- This is critical for AVX2 operations which require 32-byte alignment
+- Internally wraps ArrayDataAlignmentVerify but with vector-specific alignment check
+*/
+func VectorDataAlignmentVerify[T foundation.Numeric](vector memcore.MarkRaw) bool {
+	dataPtr := VectorDataPtrGet[T](vector)
+	if dataPtr == nil {
+		return false
+	}
+	requiredAlign := VectorDataRequiredAlignmentGet[T]()
+	return uintptr(dataPtr)%uintptr(requiredAlign) == 0
+}
+
+/*
+VectorDataAlignmentGet returns the actual alignment of the data pointer for a vector.
+
+This function wraps ArrayDataAlignmentGet for numeric types, providing the same
+functionality for vectors. It finds the largest power-of-two alignment that the
+data pointer satisfies.
+
+Use cases:
+- Debugging alignment issues in vector operations
+- Adaptive code paths that can use different SIMD instructions based on alignment
+- Testing and verification of vector memory layouts
+- Performance analysis (understanding alignment impact on SIMD operations)
+
+Time complexity: O(1) - simple bitwise operations
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- vector must point to a valid Vector instance
+
+Edge cases:
+- Returns 0 if vector is invalid or data pointer is nil
+- Returns 1 if data pointer is not aligned to any power-of-two boundary
+- Returns the largest power-of-two alignment (1, 2, 4, 8, 16, 32, 64, ...)
+
+Additional notes:
+- Internally wraps ArrayDataAlignmentGet
+- Common alignments: 1 (any), 2, 4, 8, 16, 32 (AVX2), 64 (cache line)
+- This is a runtime query - compile-time alignment requirements are separate
+- The result is always a power of two
+- Useful for debugging why SIMD operations might fail alignment checks
+*/
+func VectorDataAlignmentGet[T foundation.Numeric](vector memcore.MarkRaw) uint64 {
+	return ArrayDataAlignmentGet[T](vector)
+}
+
 // VectorByteOffsetGetAt returns the offset relative to the memory region for this idx.
 // Panics if the idx is invalid.
 //
@@ -228,6 +977,89 @@ func VectorSetAtUnsafe[T foundation.Numeric](vector memcore.MarkRaw, idx uint64,
 //go:inline
 func VectorSetAll[T foundation.Numeric](vector memcore.MarkRaw, v T) {
 	ArraySetAll(vector, v)
+}
+
+/*
+VectorSetFromSlice copies all elements from a Go slice into the vector, starting at index 0.
+
+This function wraps ArraySetFromSlice for numeric types. It is a convenience wrapper around
+VectorSetFromSliceRange that copies the entire slice (from index 0 to len(slice)) into the
+vector starting at index 0. The slice and vector must have the same element type, and bounds
+are validated before copying.
+
+Use cases:
+- Initializing vectors from Go slice data
+- Bulk data transfer from Go slices to manually managed memory
+- Efficient data migration from GC-managed to non-GC memory
+- Populating vectors from external data sources (files, network, etc.)
+
+Time complexity: O(n) - where n is len(slice) (number of elements copied)
+Space complexity: O(1) - only local variables used, no allocations
+
+Prerequisites:
+- vector must point to a valid Vector instance of type T
+- vector must live in memory managed by memcore
+- len(slice) must not exceed vector capacity
+
+Edge cases:
+- Returns error if len(slice) exceeds vector capacity
+- Empty slice is valid and performs no copy
+- If len(slice) < capacity, only the first len(slice) elements are copied; remaining elements unchanged
+- Increments vector version after successful copy
+
+Additional notes:
+- This function works with both contiguous and non-contiguous vector layouts
+- The copy operation uses efficient bulk memory move operations (memmove)
+- The vector's version is incremented to indicate modification
+- Source slice is not modified
+- Internally delegates to ArraySetFromSlice
+*/
+//go:inline
+func VectorSetFromSlice[T foundation.Numeric](vector memcore.MarkRaw, slice []T) error {
+	return ArraySetFromSlice[T](vector, slice)
+}
+
+/*
+VectorSetFromSliceUnsafe copies all elements from a Go slice into the vector, starting at index 0.
+It performs no bounds checks, so callers must ensure the slice length does not exceed vector capacity.
+
+This function wraps ArraySetFromSliceUnsafe for numeric types. It is a convenience wrapper around
+VectorSetFromSliceRangeUnsafe that copies the entire slice (from index 0 to len(slice)) into
+the vector starting at index 0. The slice and vector must have the same element type.
+No validation is performed.
+
+Use cases:
+- High-performance hot paths where bounds are guaranteed by the caller
+- Bulk data transfer in tight loops with pre-validated data
+- Performance-critical initialization code
+- Internal operations where safety is guaranteed by design
+
+Time complexity: O(n) - where n is len(slice) (number of elements copied)
+Space complexity: O(1) - only local variables used, no allocations
+
+Prerequisites:
+- vector must point to a valid Vector instance of type T
+- vector must live in memory managed by memcore
+- len(slice) must not exceed vector capacity (caller must validate)
+
+Edge cases:
+- No validation is performed; slice length exceeding capacity may cause memory corruption
+- Empty slice is valid and performs no copy
+- If len(slice) < capacity, only the first len(slice) elements are copied; remaining elements unchanged
+- Increments vector version after copy
+
+Additional notes:
+- This function works with both contiguous and non-contiguous vector layouts
+- The copy operation uses efficient bulk memory move operations (memmove)
+- The vector's version is incremented to indicate modification
+- Source slice is not modified
+- Internally delegates to ArraySetFromSliceUnsafe
+- Caller is responsible for all bounds checking
+*/
+//go:nosplit
+//go:inline
+func VectorSetFromSliceUnsafe[T foundation.Numeric](vector memcore.MarkRaw, slice []T) {
+	ArraySetFromSliceUnsafe[T](vector, slice)
 }
 
 // VectorZeroAll sets all values within the Vector to its zero value.
@@ -460,36 +1292,12 @@ func VectorIsIdxValid[T foundation.Numeric](vector memcore.MarkRaw, idx uint64) 
 
 // VectorSort sorts the vector in-place.
 //
-// The comparison function should return:
-// a < b : -1 (or negative)
-// a == b : 0
-// a > b : 1 (or positive)
+// This implementation uses an iterative Quicksort with Median-of-Three pivot
+// selection to ensure O(n log n) performance and zero stack-overflow risk.
+//
+// Internally delegates to ArraySort since Vector is a constrained wrapper around Array.
 func VectorSort[T foundation.Numeric](vector memcore.MarkRaw, cmp func(a, b T) int) {
-	base, inst := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Vector[T]](vector)
-
-	cap := inst.capacity
-	if cap <= 1 {
-		return
-	}
-
-	data := unsafe.Add(base, inst.dataAddrOffset)
-	elemSize := uintptr(inst.itemSize)
-
-	tmp := make([]T, cap)
-
-	for i := uint64(0); i < cap; i++ {
-		ptr := unsafe.Add(data, uintptr(i)*elemSize)
-		tmp[i] = *(*T)(ptr)
-	}
-
-	sort.Slice(tmp, func(i, j int) bool {
-		return cmp(tmp[i], tmp[j]) < 0
-	})
-
-	for i := uint64(0); i < cap; i++ {
-		ptr := unsafe.Add(data, uintptr(i)*elemSize)
-		*(*T)(ptr) = tmp[i]
-	}
+	ArraySort[T](vector, cmp)
 }
 
 // VectorSorted returns a sorted variant of this vector.
@@ -507,40 +1315,16 @@ func VectorSorted[T foundation.Numeric](
 	dstBase, dstInst := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Vector[T]](targetVectorAddr)
 
 	if srcInst.capacity != dstInst.capacity {
-		panic(fmt.Errorf(
-			"VectorSorted: capacity mismatch (src=%d, dst=%d)",
-			srcInst.capacity, dstInst.capacity,
-		))
-	}
-
-	cap := srcInst.capacity
-	if cap <= 1 {
-		srcData := unsafe.Add(srcBase, srcInst.dataAddrOffset)
-		dstData := unsafe.Add(dstBase, dstInst.dataAddrOffset)
-		total := uintptr(cap) * uintptr(srcInst.itemSize)
-		memcore.MemoryMoveNoHeapPointers(dstData, srcData, total)
-		return
+		panic("VectorSorted: capacity mismatch")
 	}
 
 	srcData := unsafe.Add(srcBase, srcInst.dataAddrOffset)
-	elemSize := uintptr(srcInst.itemSize)
-
-	tmp := make([]T, cap)
-
-	for i := uint64(0); i < cap; i++ {
-		ptr := unsafe.Add(srcData, uintptr(i)*elemSize)
-		tmp[i] = *(*T)(ptr)
-	}
-
-	sort.Slice(tmp, func(i, j int) bool {
-		return cmp(tmp[i], tmp[j]) < 0
-	})
-
 	dstData := unsafe.Add(dstBase, dstInst.dataAddrOffset)
-	for i := uint64(0); i < cap; i++ {
-		ptr := unsafe.Add(dstData, uintptr(i)*elemSize)
-		*(*T)(ptr) = tmp[i]
-	}
+	totalBytes := uintptr(srcInst.capacity) * uintptr(srcInst.itemSize)
+
+	memcore.MemoryMoveNoHeapPointers(dstData, srcData, totalBytes)
+
+	VectorSort[T](targetVectorAddr, cmp)
 }
 
 // ---------------------------------------------------- VECTOR VIEW
@@ -867,4 +1651,155 @@ func vectorUnrolledGeneric[T foundation.Numeric](capacity uint64, stride uint64,
 	for ; i < capacity; i++ {
 		apply(uintptr(i))
 	}
+}
+
+/*
+VectorCursor represents a fast-access cursor for efficient random access to vector elements.
+
+This type wraps ArrayCursor for numeric types, providing the same high-performance cursor interface
+specialized for vectors. The cursor caches the base data pointer, element size, and capacity, enabling
+fast pointer arithmetic without repeated header dereferencing.
+
+Use cases:
+- High-performance random access to vector elements
+- Batch processing with non-sequential access patterns
+- SIMD-optimized operations requiring direct pointer access
+- Reducing overhead in performance-critical loops
+- Zero-copy element access for read/write operations
+
+Time complexity: O(1) - structure initialization is constant-time
+Space complexity: O(1) - fixed-size structure
+
+Prerequisites:
+- Must be created using VectorCursorCreate
+- Vector must remain valid for the lifetime of the cursor
+
+Edge cases:
+- Cursor becomes invalid if vector memory is deallocated or unregistered
+- No bounds checking is performed - caller must ensure indices are valid
+- Capacity reflects the vector's capacity, not its current length
+
+Additional notes:
+- Cursor caches the data base pointer and item size for maximum performance
+- Uses unsafe pointer arithmetic for direct memory access
+- Type safety is maintained through the generic parameter T (must be foundation.Numeric)
+- Suitable for both sequential and random access patterns
+- Internally wraps ArrayCursor for numeric types
+*/
+type VectorCursor[T foundation.Numeric] ArrayCursor[T]
+
+/*
+VectorCursorCreate creates a fast-access cursor around a Vector[T].
+
+This function wraps ArrayCursorCreate for numeric types, initializing a cursor that caches the base
+data pointer and element size. The cursor provides O(1) random access to any element through direct
+pointer arithmetic, eliminating function call overhead and header lookups in performance-critical
+code paths.
+
+Use cases:
+- Setting up cursor-based iteration loops for vectors
+- High-performance random access patterns
+- Batch processing operations on numeric data
+- SIMD-optimized data processing
+- Zero-copy element manipulation
+
+Time complexity: O(1) - calculates offset and creates cursor
+Space complexity: O(1) - returns a fixed-size cursor structure
+
+Prerequisites:
+- vector must be a valid MarkRaw pointing to an initialized Vector[T]
+- Vector must not have been deallocated or unregistered
+- Type T must be a numeric type (foundation.Numeric)
+
+Edge cases:
+- Cursor becomes invalid if vector memory is deallocated or unregistered
+- Data pointer points directly to the vector's data region
+- Capacity reflects the vector's capacity, not its current length
+
+Additional notes:
+- Cursor caches data pointer and item size for maximum performance
+- Uses unsafe pointer arithmetic for direct memory access
+- No header manipulation required after cursor creation
+- Type safety is maintained through the generic parameter T (must be foundation.Numeric)
+- The cursor is a value type and can be copied, but shares the same underlying data
+- Internally delegates to ArrayCursorCreate
+*/
+//
+//go:inline
+func VectorCursorCreate[T foundation.Numeric](vector memcore.MarkRaw) VectorCursor[T] {
+	return VectorCursor[T](ArrayCursorCreate[T](vector))
+}
+
+/*
+PtrAt returns a pointer to the element at the given index.
+
+This function wraps ArrayCursor.PtrAt for numeric types, using pointer arithmetic to calculate the
+address of the element at the specified index. This avoids any header dereferencing or function calls,
+providing maximum performance for random access patterns.
+
+Use cases:
+- Direct element access in cursor-based iteration loops
+- High-performance batch operations
+- SIMD-optimized data processing
+- Zero-copy read/write operations
+
+Time complexity: O(1) - pointer arithmetic only
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- cursor must be a valid VectorCursor created with VectorCursorCreate
+- idx must be in range [0, cursor.Capacity())
+
+Edge cases:
+- No bounds checking is performed - caller must ensure idx is valid
+- Returns invalid pointer if idx exceeds capacity
+- Pointer becomes invalid if vector memory is deallocated or unregistered
+- Modifying elements through the pointer directly affects the vector data
+
+Additional notes:
+- Uses cached base pointer and item size for maximum performance
+- Returns a pointer that can be used for both reading and writing
+- Type safety is maintained through the generic parameter T (must be foundation.Numeric)
+- The returned pointer remains valid as long as the vector and cursor are valid
+- Internally delegates to ArrayCursor.PtrAt
+*/
+//
+//go:inline
+func (c *VectorCursor[T]) PtrAt(idx uint64) *T {
+	return (*ArrayCursor[T])(c).PtrAt(idx)
+}
+
+/*
+Capacity returns the number of elements that can be stored in the vector.
+
+This function wraps ArrayCursor.Capacity for numeric types, returning the capacity of the vector that
+the cursor was created from. The capacity represents the maximum number of elements that can be stored,
+not the current length of valid elements in the vector.
+
+Use cases:
+- Bounds checking before accessing elements
+- Loop iteration limits
+- Memory allocation planning
+- Validation of index ranges
+
+Time complexity: O(1) - returns cached value
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- cursor must be a valid VectorCursor created with VectorCursorCreate
+
+Edge cases:
+- Returns the vector's capacity, which may be greater than the number of valid elements
+- Capacity does not change after cursor creation, even if the vector is modified
+
+Additional notes:
+- Capacity is cached at cursor creation time
+- The value reflects the vector's capacity at the time the cursor was created
+- Type safety is maintained through the generic parameter T (must be foundation.Numeric)
+- Internally delegates to ArrayCursor.Capacity
+*/
+//
+//go:inline
+func (c *VectorCursor[T]) Capacity() uint64 {
+	return (*ArrayCursor[T])(c).Capacity()
 }
