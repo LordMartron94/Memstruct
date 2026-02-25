@@ -181,3 +181,100 @@ func StackIsEmpty[T any](stack memcore.MarkRaw) bool {
 	instance := memcore.MemcoreMarkDereferenceObject[Stack[T]](stack)
 	return instance.length == 0
 }
+
+/*
+StackCapacityGet returns the maximum number of elements the stack can hold.
+
+Use cases:
+- Growth policy input (e.g. DynamicStack)
+- Bounds checking and capacity queries
+- Memory planning
+
+Time complexity: O(1) - single field read
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- stack must be a valid MarkRaw pointing to an initialized Stack[T]
+
+Edge cases:
+- Returns the capacity set at StackInitializeAt; does not change over the stack's lifetime
+
+Additional notes:
+- Capacity is in elements, not bytes
+*/
+func StackCapacityGet[T any](stack memcore.MarkRaw) uint64 {
+	instance := memcore.MemcoreMarkDereferenceObject[Stack[T]](stack)
+	return instance.capacity
+}
+
+/*
+StackLengthGet returns the current number of elements on the stack.
+
+Use cases:
+- Checking if stack has space before push (e.g. DynamicStack growth check)
+- Iteration limits and bounds
+- Empty/full checks
+
+Time complexity: O(1) - single field read
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- stack must be a valid MarkRaw pointing to an initialized Stack[T]
+
+Edge cases:
+- Returns 0 for an empty stack
+- Length is always <= capacity
+
+Additional notes:
+- Length increases on push and decreases on pop
+*/
+func StackLengthGet[T any](stack memcore.MarkRaw) uint64 {
+	instance := memcore.MemcoreMarkDereferenceObject[Stack[T]](stack)
+	return instance.length
+}
+
+/*
+StackContentsCopy copies the logical contents of src into dest without changing dest's capacity.
+
+Copies src.length elements from src's underlying array to dest's underlying array and sets dest.length
+to src.length. dest must be an initialized stack with dest.capacity >= src.length.
+
+Use cases:
+- Migrating stack to a larger buffer (e.g. DynamicStack growth)
+- Cloning stack contents into a pre-allocated destination
+- Reusable migration logic for extensions
+
+Time complexity: O(n) - where n is src.length (elements copied)
+Space complexity: O(1) - no allocations
+
+Prerequisites:
+- dest and src must be valid MarkRaw pointing to initialized Stack[T] of the same type T
+- dest.capacity >= src.length (dest must have sufficient capacity for src's logical length)
+
+Edge cases:
+- Returns error if dest capacity is insufficient
+- If src.length is 0, only dest.length is set to 0; no array copy
+- src is not modified; dest's existing elements beyond src.length are not zeroed
+
+Additional notes:
+- Uses ArrayCopyFromRange on the underlying arrays, then sets dest.length = src.length
+*/
+func StackContentsCopy[T any](dest, src memcore.MarkRaw) error {
+	dstStack := memcore.MemcoreMarkDereferenceObject[Stack[T]](dest)
+	srcStack := memcore.MemcoreMarkDereferenceObject[Stack[T]](src)
+
+	if srcStack.length == 0 {
+		dstStack.length = 0
+		return nil
+	}
+
+	if dstStack.capacity < srcStack.length {
+		return fmt.Errorf("StackContentsCopy: dest capacity %d < src length %d", dstStack.capacity, srcStack.length)
+	}
+
+	if err := ArrayCopyFromRange[T](dstStack.data, srcStack.data, 0, srcStack.length, 0); err != nil {
+		return err
+	}
+	dstStack.length = srcStack.length
+	return nil
+}
