@@ -90,6 +90,38 @@ value := memstruct.StackPop[int](stackMark)
 isEmpty := memstruct.StackIsEmpty[int](stackMark)
 ```
 
+### DynamicStack[T]
+
+A thin wrapper around `Stack[T]` that automatically grows capacity when full.
+
+**Features:**
+- Same LIFO semantics as `Stack[T]`
+- Client-provided allocation function and growth policy (same signature as memforge's `GrowthStrategy`: `func(currentCap, neededCap uint64) uint64`)
+- Check-then-grow push: before each push, if there is no space, the stack grows then pushes (no error path from push itself)
+- Optional free function called with the old mark when the stack grows
+
+**When to use:** Unbounded or unknown stack size; when you want to push without managing capacity manually.
+
+**Growth policy contract:** The policy must return a value ≥ `neededCap` (e.g. `currentCap+1`); otherwise the code panics (policy violation).
+
+**Important:** After any `DynamicStackPush` that triggers growth, the previous stack mark is invalid. Do not store the value returned by `DynamicStackStackMarkGet` long-term.
+
+**Example:**
+```go
+alloc := func(sizeBytes, alignment uint64) memcore.MarkRaw {
+    return memforge.DynamicLinearAllocatorMallocUnsafe(allocator, sizeBytes, alignment)
+}
+growthPolicy := func(currentCap, neededCap uint64) uint64 {
+    n := currentCap * 2
+    if n < neededCap { n = neededCap }
+    return n
+}
+var ds memstruct.DynamicStack[int]
+memstruct.DynamicStackInitialize[int](&ds, alloc, growthPolicy, 8)
+_ = memstruct.DynamicStackPush[int](&ds, 42)
+v, _ := memstruct.DynamicStackPop[int](&ds)
+```
+
 ### Queue[T]
 
 A first-in-first-out (FIFO) queue implemented as a circular buffer.
