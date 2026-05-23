@@ -207,6 +207,16 @@ length := memstruct.StringLengthGet(stringMark)
 bytes := memstruct.StringBytesGet(stringMark)
 ```
 
+### GoString and CString (manual memory)
+
+**GoString** stores a native Go `string` header plus payload in one manual region. The header's data pointer is a pointer value aimed at manual memory—not a reference to Go heap-managed memory.
+
+**CString** stores NUL-terminated UTF-8 bytes only (`len + 1` bytes). Use for C-ABI / FFI; `CStringPointerGet` returns `*byte`.
+
+Factories: `memarch.MemArchGoStringCreate`, `memarch.MemArchCStringCreate`.
+
+**Pointer safety:** manually managed memory must not contain pointers to Go heap-managed memory. Storing addresses that refer only to the same manual allocation (or other non-heap memory) is supported.
+
 ## Common Operations
 
 ### Initialization

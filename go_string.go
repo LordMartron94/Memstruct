@@ -6,6 +6,17 @@ import (
 )
 
 /*
+Manual string types in this package may store pointer values (for example the data pointer inside
+a native Go string header). That is not the same as storing a pointer to Go heap-managed memory.
+
+The GC rule is: manually managed regions must not contain pointers that reference Go heap-managed
+memory (slices, maps, channel internals, escaped variables, etc.). Pointers and addresses that
+refer only to the same manual allocation or other non-heap memory are expected and supported.
+
+For C-ABI NUL-terminated text, use CString* in c_string.go instead of GoString*.
+*/
+
+/*
 GoStringRequiredBytesGet returns the total bytes required to store a native Go string in manual memory.
 
 The layout is a Go string header followed immediately by the UTF-8 payload (no null terminator).
@@ -47,8 +58,9 @@ func GoStringRequiredAlignmentGet() uint64 {
 /*
 GoStringInitializeAt writes a native Go string at strAddr using content copied from value.
 
-The resulting string header and its data pointer both refer only to manual memory inside the
-allocation at strAddr. The region must provide at least GoStringRequiredBytesGet(len(value)) bytes.
+The resulting string header contains a pointer value aimed at manual memory inside the same
+allocation. That pointer is not a reference to Go heap-managed memory. The region must provide
+at least GoStringRequiredBytesGet(len(value)) bytes.
 
 Unlike memstruct.String, this stores the runtime string type directly. If the containing memory
 region is relocated, the string's data pointer must be updated to the new payload address.
