@@ -73,12 +73,12 @@ Additional notes:
 func ArrayRequiredBytesGet[T any](capacity uint64) uint64 {
 	headerSize := memcore.SizeOf[Array[T]]()
 	itemSize := memcore.SizeOf[T]()
-	
+
 	// Align data offset to ensure data region meets alignment requirements
 	// This padding is necessary for SIMD operations which require specific alignment
 	dataAlignment := ArrayDataRequiredAlignmentGet[T]()
 	alignedDataOffset := memcore.AlignUp(uint64(headerSize), dataAlignment)
-	
+
 	return alignedDataOffset + itemSize*capacity
 }
 
@@ -277,7 +277,7 @@ func ArrayInitializeAt[T any](arrayAddr memcore.MarkRaw, capacity uint64) {
 
 	itemSize := memcore.SizeOf[T]()
 	arrayPtr := memcore.MemcoreMarkDereferenceObject[Array[T]](arrayAddr)
-	
+
 	// Verify base address alignment - ensures end-to-end alignment
 	// Even with aligned offset, if base address isn't aligned, data won't be aligned
 	basePtr := uintptr(unsafe.Pointer(arrayPtr))
@@ -286,12 +286,12 @@ func ArrayInitializeAt[T any](arrayAddr memcore.MarkRaw, capacity uint64) {
 		panic(fmt.Sprintf("ArrayInitializeAt: base address not aligned: address %#x, required alignment %d, misalignment %d",
 			basePtr, requiredAlign, basePtr%uintptr(requiredAlign)))
 	}
-	
+
 	// Align data offset to ensure data region meets alignment requirements
 	// This is critical for SIMD operations which require 32-byte alignment
 	dataAlignment := ArrayDataRequiredAlignmentGet[T]()
 	alignedDataOffset := memcore.AlignUp(uint64(headerSize), dataAlignment)
-	
+
 	*arrayPtr = Array[T]{
 		dataAddrOffset: uintptr(alignedDataOffset),
 		capacity:       capacity,
@@ -1030,21 +1030,21 @@ func ArrayDataAlignmentGet[T any](array memcore.MarkRaw) uint64 {
 	if dataPtr == nil {
 		return 0
 	}
-	
+
 	ptr := uintptr(dataPtr)
-	
+
 	// Find the largest power-of-two alignment by finding the lowest set bit
 	// If ptr is 0, it's perfectly aligned to all boundaries, but we return 0 for nil
 	if ptr == 0 {
 		return 0
 	}
-	
+
 	// Find the lowest set bit (trailing zeros) using bitwise AND
 	// This gives us the largest power-of-two alignment
 	// Example: ptr = 0x1000 (4096) -> alignment = 4096 (all bits clear except alignment bits)
 	// Example: ptr = 0x1001 (4097) -> alignment = 1 (lowest bit set)
 	// Example: ptr = 0x1008 (4104) -> alignment = 8 (bits 0-2 clear, bit 3 set)
-	
+
 	// Check common alignments from largest to smallest
 	if (ptr & 127) == 0 {
 		return 128
@@ -1569,23 +1569,8 @@ func ArrayIsIdxValid[T any](array memcore.MarkRaw, idx uint64) bool {
 	return idx < instance.capacity
 }
 
-// ArraySort sorts the array in-place.
-//
-// This implementation uses an iterative Quicksort with Median-of-Three pivot
-// selection to ensure O(n log n) performance and zero stack-overflow risk.
-//
-// The comparison function should return:
-// a < b : -1 (or negative)
-// a == b : 0
-// a > b : 1 (or positive)
-func ArraySort[T any](array memcore.MarkRaw, cmp func(a, b T) int) {
-	base, inst := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[T]](array)
-
-	capacity := inst.capacity
-	if capacity <= 1 {
-		return
-	}
-
+// ArraySortRange sorts a specific [from, to) range of the array in-place.
+func ArraySortRange[T any](base unsafe.Pointer, inst *Array[T], from, to uint64, cmp func(a, b T) int) {
 	dataAddr := unsafe.Add(base, inst.dataAddrOffset)
 	elemSize := uintptr(inst.itemSize)
 
@@ -1595,10 +1580,14 @@ func ArraySort[T any](array memcore.MarkRaw, cmp func(a, b T) int) {
 	top := -1
 
 	// Push initial bounds
+	if from >= to || to > inst.capacity {
+		panic("ArraySortRange: invalid from / to")
+	}
+
 	top++
-	stack[top] = 0
+	stack[top] = int64(from)
 	top++
-	stack[top] = int64(capacity - 1)
+	stack[top] = int64(to - 1)
 
 	for top >= 0 {
 		high := stack[top]
@@ -1660,7 +1649,27 @@ func ArraySort[T any](array memcore.MarkRaw, cmp func(a, b T) int) {
 			}
 		}
 	}
-	arrayIncrementVersion[T](array)
+	arrayIncrementVersionDeref(inst)
+}
+
+// ArraySort sorts the array in-place.
+//
+// This implementation uses an iterative Quicksort with Median-of-Three pivot
+// selection to ensure O(n log n) performance and zero stack-overflow risk.
+//
+// The comparison function should return:
+// a < b : -1 (or negative)
+// a == b : 0
+// a > b : 1 (or positive)
+func ArraySort[T any](array memcore.MarkRaw, cmp func(a, b T) int) {
+	base, inst := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[T]](array)
+
+	capacity := inst.capacity
+	if capacity <= 1 {
+		return
+	}
+
+	ArraySortRange(base, inst, 0, capacity, cmp)
 }
 
 // ArraySorted returns a sorted variant of this array.
@@ -2030,6 +2039,11 @@ func ArrayVersionGet[T any](array memcore.MarkRaw) uint64 {
 func arrayIncrementVersion[T any](array memcore.MarkRaw) {
 	instance := memcore.MemcoreMarkDereferenceObjectUnsafe[Array[T]](array)
 	instance.version++
+}
+
+//go:inline
+func arrayIncrementVersionDeref[T any](array *Array[T]) {
+	array.version++
 }
 
 //go:inline
