@@ -1569,8 +1569,7 @@ func ArrayIsIdxValid[T any](array memcore.MarkRaw, idx uint64) bool {
 	return idx < instance.capacity
 }
 
-// ArraySortRange sorts a specific [from, to) range of the array in-place.
-func ArraySortRange[T any](base unsafe.Pointer, inst *Array[T], from, to uint64, cmp func(a, b T) int) {
+func arraySortRangeDeref[T any](base unsafe.Pointer, inst *Array[T], from, to uint64, cmp func(a, b T) int) {
 	dataAddr := unsafe.Add(base, inst.dataAddrOffset)
 	elemSize := uintptr(inst.itemSize)
 
@@ -1652,6 +1651,12 @@ func ArraySortRange[T any](base unsafe.Pointer, inst *Array[T], from, to uint64,
 	arrayIncrementVersionDeref(inst)
 }
 
+// ArraySortRange sorts a specific [from, to) range of the array in-place.
+func ArraySortRange[T any](array memcore.MarkRaw, from, to uint64, cmp func(a, b T) int) {
+	base, inst := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[T]](array)
+	arraySortRangeDeref(base, inst, from, to, cmp)
+}
+
 // ArraySort sorts the array in-place.
 //
 // This implementation uses an iterative Quicksort with Median-of-Three pivot
@@ -1669,7 +1674,7 @@ func ArraySort[T any](array memcore.MarkRaw, cmp func(a, b T) int) {
 		return
 	}
 
-	ArraySortRange(base, inst, 0, capacity, cmp)
+	arraySortRangeDeref(base, inst, 0, capacity, cmp)
 }
 
 // ArraySorted returns a sorted variant of this array.
