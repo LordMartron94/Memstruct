@@ -3,11 +3,13 @@ package memstruct
 import (
 	"fmt"
 	"memcore"
+	"unsafe"
 )
 
 // Queue is a custom queue implementation built on top of the array primitive.
 type Queue[T any] struct {
-	data     memcore.MarkRaw
+	data     *Array[T]
+	dataBase unsafe.Pointer
 	head     uint64
 	tail     uint64
 	length   uint64
@@ -29,32 +31,26 @@ func QueueRequiredAlignmentGet[T any]() uint64 {
 }
 
 // QueueInitializeAt initializes an instance of a queue for type T at a specific memory address.
-// Ensure the address is properly aligned and has the right size.
-//
-// ⚠️ capacity is in elements, not bytes.
 func QueueInitializeAt[T any](queueAddr memcore.MarkRaw, capacity uint64) {
 	queueHeaderSize := memcore.SizeOf[Queue[T]]()
 	queueHeaderAlignment := memcore.AlignOf[Queue[T]]()
 
-	// Create pointer for nested array header
 	arrayPtr, _ := memcore.MemcoreMarkAlignedOffsetFrom(
 		queueAddr,
 		uintptr(queueHeaderSize),
 		queueHeaderAlignment,
 	)
 
-	// Initialize array header + data region
 	ArrayInitializeAt[T](arrayPtr, capacity)
 
-	// Initialize queue header itself
 	queuePtr := memcore.MemcoreMarkDereferenceObject[Queue[T]](queueAddr)
 	*queuePtr = Queue[T]{
-		data:     arrayPtr,
 		length:   0,
 		head:     0,
 		tail:     0,
 		capacity: capacity,
 	}
+	queueStorageWireAt(queueAddr, queuePtr)
 }
 
 // QueueSnapshotCreate creates a deep snapshot of a queue at a new location.
@@ -66,6 +62,8 @@ func QueueSnapshotCreate[T any](dest memcore.MarkRaw, instance memcore.MarkRaw) 
 	dstAddr := memcore.MemcoreMarkDereference(dest)
 	memcore.MemoryMoveNoHeapPointers(dstAddr, srcAddr, uintptr(totalSize))
 
+	dstQueue := memcore.MemcoreMarkDereferenceObject[Queue[T]](dest)
+	queueStorageWireAt(dest, dstQueue)
 	return dest
 }
 
@@ -78,8 +76,12 @@ func QueueSnapshotRestore[T any](dest memcore.MarkRaw, src memcore.MarkRaw) {
 		panic(fmt.Errorf("cannot restore queue snapshot: unequal capacities (%v vs %v)", dstQueue.capacity, srcQueue.capacity))
 	}
 
-	ArraySnapshotRestore[T](dstQueue.data, srcQueue.data)
+	if err := arraySnapshotRestoreFast(dstQueue.data, srcQueue.data, dstQueue.dataBase, srcQueue.dataBase); err != nil {
+		panic(err)
+	}
 	dstQueue.length = srcQueue.length
+	dstQueue.head = srcQueue.head
+	dstQueue.tail = srcQueue.tail
 }
 
 // QueuePush pushes an item into the queue.
@@ -93,7 +95,7 @@ func QueuePush[T any](queue memcore.MarkRaw, item T) error {
 		return fmt.Errorf("queue overflow: capacity %d", instance.capacity)
 	}
 
-	ArraySetAtUnsafe(instance.data, instance.tail, item)
+	ArraySetAtUnsafeFast(instance.data, instance.dataBase, instance.tail, item)
 	instance.tail = (instance.tail + 1) % instance.capacity
 	instance.length++
 	return nil
@@ -106,7 +108,7 @@ func QueuePush[T any](queue memcore.MarkRaw, item T) error {
 func QueuePushUnsafe[T any](queue memcore.MarkRaw, item T) {
 	instance := memcore.MemcoreMarkDereferenceObject[Queue[T]](queue)
 
-	ArraySetAtUnsafe(instance.data, instance.tail, item)
+	ArraySetAtUnsafeFast(instance.data, instance.dataBase, instance.tail, item)
 	instance.tail = (instance.tail + 1) % instance.capacity
 	instance.length++
 }
@@ -123,7 +125,7 @@ func QueuePop[T any](queue memcore.MarkRaw) (T, error) {
 		return zero, fmt.Errorf("queue underflow: empty queue")
 	}
 
-	item := ArrayItemGetAtUnsafe[T](instance.data, instance.head)
+	item := ArrayItemGetAtUnsafeFast(instance.data, instance.dataBase, instance.head)
 	instance.head = (instance.head + 1) % instance.capacity
 	instance.length--
 	return item, nil
@@ -136,7 +138,7 @@ func QueuePop[T any](queue memcore.MarkRaw) (T, error) {
 func QueuePopUnsafe[T any](queue memcore.MarkRaw) T {
 	instance := memcore.MemcoreMarkDereferenceObject[Queue[T]](queue)
 
-	item := ArrayItemGetAtUnsafe[T](instance.data, instance.head)
+	item := ArrayItemGetAtUnsafeFast(instance.data, instance.dataBase, instance.head)
 	instance.head = (instance.head + 1) % instance.capacity
 	instance.length--
 	return item
@@ -154,7 +156,7 @@ func QueuePeek[T any](queue memcore.MarkRaw) (T, error) {
 		return zero, fmt.Errorf("queue empty")
 	}
 
-	return ArrayItemGetAtUnsafe[T](instance.data, instance.head), nil
+	return ArrayItemGetAtUnsafeFast(instance.data, instance.dataBase, instance.head), nil
 }
 
 // QueuePeekUnsafe peeks without bounds checking.
@@ -163,7 +165,7 @@ func QueuePeek[T any](queue memcore.MarkRaw) (T, error) {
 //go:nosplit
 func QueuePeekUnsafe[T any](queue memcore.MarkRaw) T {
 	instance := memcore.MemcoreMarkDereferenceObject[Queue[T]](queue)
-	return ArrayItemGetAtUnsafe[T](instance.data, instance.head)
+	return ArrayItemGetAtUnsafeFast(instance.data, instance.dataBase, instance.head)
 }
 
 // QueueClear resets logical length only (does not zero memory).
@@ -183,8 +185,10 @@ func QueueClear[T any](queue memcore.MarkRaw) {
 //go:nosplit
 func QueueClearAndZero[T any](queue memcore.MarkRaw) {
 	instance := memcore.MemcoreMarkDereferenceObject[Queue[T]](queue)
-	ArrayClear[T](instance.data)
+	ArrayClearFast(instance.data, instance.dataBase)
 	instance.length = 0
+	instance.head = 0
+	instance.tail = 0
 }
 
 // QueueIsEmpty checks if queue is empty.

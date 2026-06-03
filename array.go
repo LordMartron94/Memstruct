@@ -892,6 +892,17 @@ func ArrayCapacityGet[T any](array memcore.MarkRaw) uint64 {
 	return instance.capacity
 }
 
+/*
+ArrayDataStorageByteCountGet returns the byte size of the array data region (capacity * element stride).
+
+The mark may refer to any memstruct Array element type; capacity and item stride are read from the
+array header in memory, not from the type parameter used at the call site.
+*/
+func ArrayDataStorageByteCountGet(array memcore.MarkRaw) uint64 {
+	_, instance := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[byte]](array)
+	return instance.capacity * uint64(instance.itemSize)
+}
+
 // ArrayItemGetAt returns T at idx within the array.
 // It returns an error if the idx is invalid.
 //
@@ -1033,19 +1044,10 @@ func ArrayDataAlignmentGet[T any](array memcore.MarkRaw) uint64 {
 
 	ptr := uintptr(dataPtr)
 
-	// Find the largest power-of-two alignment by finding the lowest set bit
-	// If ptr is 0, it's perfectly aligned to all boundaries, but we return 0 for nil
 	if ptr == 0 {
 		return 0
 	}
 
-	// Find the lowest set bit (trailing zeros) using bitwise AND
-	// This gives us the largest power-of-two alignment
-	// Example: ptr = 0x1000 (4096) -> alignment = 4096 (all bits clear except alignment bits)
-	// Example: ptr = 0x1001 (4097) -> alignment = 1 (lowest bit set)
-	// Example: ptr = 0x1008 (4104) -> alignment = 8 (bits 0-2 clear, bit 3 set)
-
-	// Check common alignments from largest to smallest
 	if (ptr & 127) == 0 {
 		return 128
 	}

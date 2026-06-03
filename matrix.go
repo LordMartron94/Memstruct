@@ -12,9 +12,10 @@ import (
 // It wraps a Vector internally, storing data in row-major order.
 // All Vector functions work on the underlying Vector.
 type Matrix[T foundation.Numeric] struct {
-	data memcore.MarkRaw // Vector[T] with capacity = rows * cols
-	rows uint64
-	cols uint64
+	data     *Array[T]
+	dataBase unsafe.Pointer
+	rows     uint64
+	cols     uint64
 }
 
 // MatrixView represents a view around a matrix.
@@ -63,9 +64,6 @@ func (m *Matrix[T]) String() string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Matrix[%T]{rows=%d, cols=%d, data=[", *new(T), m.rows, m.cols)
 
-	// Access the stored mark - if invalid, Vector functions will handle errors
-	vectorAddr := m.data
-
 	for row := uint64(0); row < m.rows; row++ {
 		if row > 0 {
 			sb.WriteString("; ")
@@ -76,7 +74,7 @@ func (m *Matrix[T]) String() string {
 				sb.WriteString(", ")
 			}
 			idx := matrixRowColToIdx(row, col, m.cols)
-			val := VectorItemGetAtUnsafe[T](vectorAddr, idx)
+			val := ArrayItemGetAtUnsafeFast(m.data, m.dataBase, idx)
 			fmt.Fprintf(&sb, "%v", val)
 		}
 		sb.WriteString("]")
@@ -100,10 +98,19 @@ func MatrixInitializeAt[T foundation.Numeric](matrixAddr memcore.MarkRaw, rows, 
 	VectorInitializeAt[T](vectorMark, vectorCapacity)
 
 	*matrixPtr = Matrix[T]{
-		data: vectorMark,
 		rows: rows,
 		cols: cols,
 	}
+	matrixStorageWireAt(matrixAddr, matrixPtr)
+}
+
+func matrixStorageWireAt[T foundation.Numeric](matrixAddr memcore.MarkRaw, matrix *Matrix[T]) {
+	vectorMark := matrixVectorMark[T](matrixAddr)
+	matrix.dataBase, matrix.data = arrayStorageWireAtMark[T](vectorMark)
+}
+
+func matrixVectorMark[T foundation.Numeric](matrixAddr memcore.MarkRaw) memcore.MarkRaw {
+	return memcore.MemcoreMarkOffsetFrom(matrixAddr, uintptr(memcore.SizeOf[Matrix[T]]()))
 }
 
 // MatrixInitializeFrom initializes a new matrix at matrixAddr with the contents of src.
@@ -132,9 +139,7 @@ func MatrixSnapshotCreate[T foundation.Numeric](dest memcore.MarkRaw, instance m
 	memcore.MemoryMoveNoHeapPointers(dstAddr, srcAddr, uintptr(totalSize))
 
 	dstMatrix := memcore.MemcoreMarkDereferenceObjectUnsafe[Matrix[T]](dest)
-	offsetData := uintptr(memcore.SizeOf[Matrix[T]]())
-	dstMatrix.data = memcore.MemcoreMarkOffsetFrom(dest, offsetData)
-
+	matrixStorageWireAt(dest, dstMatrix)
 	return dest
 }
 
@@ -160,7 +165,7 @@ func MatrixSnapshotRestore[T foundation.Numeric](dest, src memcore.MarkRaw) erro
 	srcAddr := memcore.MemcoreMarkDereferenceUnsafe(src)
 
 	memcore.MemoryMoveNoHeapPointers(dstAddr, srcAddr, uintptr(totalBytes))
-
+	matrixStorageWireAt(dest, dstMatrix)
 	return nil
 }
 
@@ -190,7 +195,11 @@ func MatrixCopyFrom[T foundation.Numeric](dest memcore.MarkRaw, src memcore.Mark
 		srcStartIdx := matrixRowColToIdx(row, 0, srcMatrix.cols)
 		dstStartIdx := matrixRowColToIdx(destStartRow+row, destStartCol, dstMatrix.cols)
 
-		err := VectorCopyFromRange[T](dstMatrix.data, srcMatrix.data, srcStartIdx, srcStartIdx+srcMatrix.cols, dstStartIdx)
+		err := ArrayCopyFromRangeFast(
+			dstMatrix.data, dstMatrix.dataBase,
+			srcMatrix.data, srcMatrix.dataBase,
+			srcStartIdx, srcStartIdx+srcMatrix.cols, dstStartIdx,
+		)
 		if err != nil {
 			return err
 		}
@@ -229,7 +238,11 @@ func MatrixCopyFromRange[T foundation.Numeric](
 		srcStartIdx := matrixRowColToIdx(startRow+row, startCol, srcMatrix.cols)
 		dstStartIdx := matrixRowColToIdx(destStartRow+row, destStartCol, dstMatrix.cols)
 
-		err := VectorCopyFromRange[T](dstMatrix.data, srcMatrix.data, srcStartIdx, srcStartIdx+cols, dstStartIdx)
+		err := ArrayCopyFromRangeFast(
+			dstMatrix.data, dstMatrix.dataBase,
+			srcMatrix.data, srcMatrix.dataBase,
+			srcStartIdx, srcStartIdx+cols, dstStartIdx,
+		)
 		if err != nil {
 			return err
 		}
@@ -294,7 +307,7 @@ func MatrixItemGetAt[T foundation.Numeric](matrix memcore.MarkRaw, row, col uint
 	}
 
 	idx := matrixRowColToIdx(row, col, matrixPtr.cols)
-	return VectorItemGetAt[T](matrixPtr.data, idx)
+	return ArrayItemGetAtFast(matrixPtr.data, matrixPtr.dataBase, idx)
 }
 
 // MatrixItemGetAtUnsafe returns T at (row, col) within the matrix.
@@ -304,7 +317,7 @@ func MatrixItemGetAt[T foundation.Numeric](matrix memcore.MarkRaw, row, col uint
 func MatrixItemGetAtUnsafe[T foundation.Numeric](matrix memcore.MarkRaw, row, col uint64) T {
 	matrixPtr := memcore.MemcoreMarkDereferenceObjectUnsafe[Matrix[T]](matrix)
 	idx := matrixRowColToIdx(row, col, matrixPtr.cols)
-	return VectorItemGetAtUnsafe[T](matrixPtr.data, idx)
+	return ArrayItemGetAtUnsafeFast(matrixPtr.data, matrixPtr.dataBase, idx)
 }
 
 // MatrixItemPtrGetAt returns a pointer to T at (row, col) within the matrix.
@@ -324,7 +337,7 @@ func MatrixItemPtrGetAt[T foundation.Numeric](matrix memcore.MarkRaw, row, col u
 	}
 
 	idx := matrixRowColToIdx(row, col, matrixPtr.cols)
-	return VectorItemPtrGetAt[T](matrixPtr.data, idx)
+	return ArrayItemPtrGetAtFast(matrixPtr.data, matrixPtr.dataBase, idx)
 }
 
 // MatrixItemPtrGetAtUnsafe returns a pointer to T at (row, col) within the matrix.
@@ -337,7 +350,7 @@ func MatrixItemPtrGetAt[T foundation.Numeric](matrix memcore.MarkRaw, row, col u
 func MatrixItemPtrGetAtUnsafe[T foundation.Numeric](matrix memcore.MarkRaw, row, col uint64) *T {
 	matrixPtr := memcore.MemcoreMarkDereferenceObjectUnsafe[Matrix[T]](matrix)
 	idx := matrixRowColToIdx(row, col, matrixPtr.cols)
-	return VectorItemPtrGetAtUnsafe[T](matrixPtr.data, idx)
+	return ArrayItemPtrGetAtUnsafeFast(matrixPtr.data, matrixPtr.dataBase, idx)
 }
 
 // MatrixDataPtrGet returns the current pointer to the underlying data storage in memory.
@@ -347,7 +360,7 @@ func MatrixItemPtrGetAtUnsafe[T foundation.Numeric](matrix memcore.MarkRaw, row,
 //go:inline
 func MatrixDataPtrGet[T foundation.Numeric](matrix memcore.MarkRaw) unsafe.Pointer {
 	matrixPtr := memcore.MemcoreMarkDereferenceObjectUnsafe[Matrix[T]](matrix)
-	return VectorDataPtrGet[T](matrixPtr.data)
+	return ArrayDataPtrGetFast(matrixPtr.data, matrixPtr.dataBase)
 }
 
 // MatrixByteOffsetGetAt returns the offset relative to the memory region for this (row, col).
@@ -357,7 +370,7 @@ func MatrixDataPtrGet[T foundation.Numeric](matrix memcore.MarkRaw) unsafe.Point
 func MatrixByteOffsetGetAt[T foundation.Numeric](matrix memcore.MarkRaw, row, col uint64) uintptr {
 	matrixPtr := memcore.MemcoreMarkDereferenceObjectUnsafe[Matrix[T]](matrix)
 	idx := matrixRowColToIdx(row, col, matrixPtr.cols)
-	return VectorByteOffsetGetAt[T](matrixPtr.data, idx)
+	return ArrayByteOffsetGetAtFast(matrixPtr.data, idx)
 }
 
 // MatrixByteOffsetGetAtUnsafe returns the offset relative to the memory region for this (row, col).
@@ -367,7 +380,7 @@ func MatrixByteOffsetGetAt[T foundation.Numeric](matrix memcore.MarkRaw, row, co
 func MatrixByteOffsetGetAtUnsafe[T foundation.Numeric](matrix memcore.MarkRaw, row, col uint64) uintptr {
 	matrixPtr := memcore.MemcoreMarkDereferenceObjectUnsafe[Matrix[T]](matrix)
 	idx := matrixRowColToIdx(row, col, matrixPtr.cols)
-	return VectorByteOffsetGetAtUnsafe[T](matrixPtr.data, idx)
+	return ArrayByteOffsetGetAtUnsafeFast(matrixPtr.data, idx)
 }
 
 // MatrixSetAt sets (row, col) of matrix to value T.
@@ -384,7 +397,7 @@ func MatrixSetAt[T foundation.Numeric](matrix memcore.MarkRaw, row, col uint64, 
 	}
 
 	idx := matrixRowColToIdx(row, col, matrixPtr.cols)
-	return VectorSetAt(matrixPtr.data, idx, value)
+	return ArraySetAtFast(matrixPtr.data, matrixPtr.dataBase, idx, value)
 }
 
 // MatrixSetAtUnsafe sets (row, col) of matrix to value T.
@@ -395,7 +408,7 @@ func MatrixSetAt[T foundation.Numeric](matrix memcore.MarkRaw, row, col uint64, 
 func MatrixSetAtUnsafe[T foundation.Numeric](matrix memcore.MarkRaw, row, col uint64, value T) {
 	matrixPtr := memcore.MemcoreMarkDereferenceObjectUnsafe[Matrix[T]](matrix)
 	idx := matrixRowColToIdx(row, col, matrixPtr.cols)
-	VectorSetAtUnsafe(matrixPtr.data, idx, value)
+	ArraySetAtUnsafeFast(matrixPtr.data, matrixPtr.dataBase, idx, value)
 }
 
 // MatrixSetAll sets all values within the matrix to value T.
@@ -403,7 +416,7 @@ func MatrixSetAtUnsafe[T foundation.Numeric](matrix memcore.MarkRaw, row, col ui
 //go:inline
 func MatrixSetAll[T foundation.Numeric](matrix memcore.MarkRaw, v T) {
 	matrixPtr := memcore.MemcoreMarkDereferenceObjectUnsafe[Matrix[T]](matrix)
-	VectorSetAll(matrixPtr.data, v)
+	ArraySetAllFast(matrixPtr.data, matrixPtr.dataBase, v)
 }
 
 // MatrixZeroAll sets all values within the Matrix to its zero value.
@@ -412,7 +425,7 @@ func MatrixSetAll[T foundation.Numeric](matrix memcore.MarkRaw, v T) {
 //go:inline
 func MatrixZeroAll[T foundation.Numeric](matrix memcore.MarkRaw) {
 	matrixPtr := memcore.MemcoreMarkDereferenceObjectUnsafe[Matrix[T]](matrix)
-	VectorZeroAll[T](matrixPtr.data)
+	ArrayZeroAllFast[T](matrixPtr.data, matrixPtr.dataBase)
 }
 
 // MatrixForEachUnsafe calls a function for every element in the matrix.
@@ -422,7 +435,7 @@ func MatrixZeroAll[T foundation.Numeric](matrix memcore.MarkRaw) {
 func MatrixForEachUnsafe[T foundation.Numeric](matrix memcore.MarkRaw, fn func(ptr unsafe.Pointer, row, col uint64)) {
 	matrixPtr := memcore.MemcoreMarkDereferenceObjectUnsafe[Matrix[T]](matrix)
 
-	VectorForEachUnsafe[T](matrixPtr.data, func(ptr unsafe.Pointer, idx uint64) {
+	ArrayForEachUnsafeFast(matrixPtr.data, matrixPtr.dataBase, func(ptr unsafe.Pointer, idx uint64) {
 		row, col := matrixIdxToRowCol(idx, matrixPtr.cols)
 		fn(ptr, row, col)
 	})
@@ -443,7 +456,7 @@ func MatrixStrideForEachUnsafe[T foundation.Numeric](
 ) {
 	matrixPtr := memcore.MemcoreMarkDereferenceObjectUnsafe[Matrix[T]](matrix)
 
-	VectorStrideForEachUnsafe[T](matrixPtr.data,
+	ArrayStrideForEachUnsafeFast(matrixPtr.data, matrixPtr.dataBase,
 		func(ptr unsafe.Pointer, idx uint64) {
 			row, col := matrixIdxToRowCol(idx, matrixPtr.cols)
 			fn(ptr, row, col)
@@ -468,7 +481,7 @@ func MatrixIterate[T foundation.Numeric](
 ) {
 	matrixPtr := memcore.MemcoreMarkDereferenceObjectUnsafe[Matrix[T]](matrix)
 
-	VectorIterate[T](matrixPtr.data, func(ptr unsafe.Pointer, idx uint64, next func(n uint64) (unsafe.Pointer, uint64, bool)) {
+	ArrayIterateFast(matrixPtr.data, matrixPtr.dataBase, func(ptr unsafe.Pointer, idx uint64, next func(n uint64) (unsafe.Pointer, uint64, bool)) {
 		row, col := matrixIdxToRowCol(idx, matrixPtr.cols)
 
 		nextMatrix := func(n uint64) (unsafe.Pointer, uint64, uint64, bool) {
@@ -496,7 +509,7 @@ func MatrixIterateUnsafe[T foundation.Numeric](
 ) {
 	matrixPtr := memcore.MemcoreMarkDereferenceObjectUnsafe[Matrix[T]](matrix)
 
-	VectorIterateUnsafe[T](matrixPtr.data, func(ptr unsafe.Pointer, idx uint64, next func(n uint64) (unsafe.Pointer, uint64)) {
+	ArrayIterateUnsafeFast(matrixPtr.data, matrixPtr.dataBase, func(ptr unsafe.Pointer, idx uint64, next func(n uint64) (unsafe.Pointer, uint64)) {
 		row, col := matrixIdxToRowCol(idx, matrixPtr.cols)
 
 		nextMatrix := func(n uint64) (unsafe.Pointer, uint64, uint64) {
@@ -518,7 +531,7 @@ func MatrixReplaceInternal[T foundation.Numeric](matrix memcore.MarkRaw, srcRow,
 	srcIdx := matrixRowColToIdx(srcRow, srcCol, matrixPtr.cols)
 	destIdx := matrixRowColToIdx(destRow, destCol, matrixPtr.cols)
 
-	return VectorReplaceInternal[T](matrixPtr.data, srcIdx, destIdx)
+	return ArrayReplaceInternalFast(matrixPtr.data, matrixPtr.dataBase, srcIdx, destIdx)
 }
 
 // MatrixReplaceInternalUnsafe replaces srcRow,srcCol with the value at destRow,destCol efficiently.
@@ -532,7 +545,7 @@ func MatrixReplaceInternalUnsafe[T foundation.Numeric](matrix memcore.MarkRaw, s
 	srcIdx := matrixRowColToIdx(srcRow, srcCol, matrixPtr.cols)
 	destIdx := matrixRowColToIdx(destRow, destCol, matrixPtr.cols)
 
-	VectorReplaceInternalUnsafe[T](matrixPtr.data, srcIdx, destIdx)
+	ArrayReplaceInternalUnsafeFast(matrixPtr.data, matrixPtr.dataBase, srcIdx, destIdx)
 }
 
 // MatrixRangeCopy is a convenience wrapper around shift left/shift right.
@@ -547,7 +560,7 @@ func MatrixRangeCopy[T foundation.Numeric](matrix memcore.MarkRaw, fromRow, from
 	fromIdx := matrixRowColToIdx(fromRow, fromCol, matrixPtr.cols)
 	toIdx := matrixRowColToIdx(toRow, toCol, matrixPtr.cols)
 
-	return VectorRangeCopy[T](matrixPtr.data, fromIdx, toIdx, count)
+	return VectorRangeCopy[T](matrixVectorMark[T](matrix), fromIdx, toIdx, count)
 }
 
 // MatrixRangeCopyUnsafe is a convenience wrapper around shift left/shift right unsafe.
@@ -562,7 +575,7 @@ func MatrixRangeCopyUnsafe[T foundation.Numeric](matrix memcore.MarkRaw, fromRow
 	fromIdx := matrixRowColToIdx(fromRow, fromCol, matrixPtr.cols)
 	toIdx := matrixRowColToIdx(toRow, toCol, matrixPtr.cols)
 
-	VectorRangeCopyUnsafe[T](matrixPtr.data, fromIdx, toIdx, count)
+	VectorRangeCopyUnsafe[T](matrixVectorMark[T](matrix), fromIdx, toIdx, count)
 }
 
 // MatrixDeleteAt resets memory to 0 at a given (row, col), using pointers to this
@@ -580,7 +593,7 @@ func MatrixDeleteAt[T foundation.Numeric](matrix memcore.MarkRaw, row, col uint6
 	}
 
 	idx := matrixRowColToIdx(row, col, matrixPtr.cols)
-	return VectorDeleteAt[T](matrixPtr.data, idx)
+	return ArrayDeleteAtFast(matrixPtr.data, matrixPtr.dataBase, idx)
 }
 
 // MatrixDeleteAtUnsafe resets memory to 0 at a given (row, col), using pointers to this
@@ -592,7 +605,7 @@ func MatrixDeleteAt[T foundation.Numeric](matrix memcore.MarkRaw, row, col uint6
 func MatrixDeleteAtUnsafe[T foundation.Numeric](matrix memcore.MarkRaw, row, col uint64) {
 	matrixPtr := memcore.MemcoreMarkDereferenceObjectUnsafe[Matrix[T]](matrix)
 	idx := matrixRowColToIdx(row, col, matrixPtr.cols)
-	VectorDeleteAtUnsafe[T](matrixPtr.data, idx)
+	ArrayDeleteAtUnsafeFast(matrixPtr.data, matrixPtr.dataBase, idx)
 }
 
 // MatrixClear resets the entire matrix's memory to 0, allowing it to be reused.
@@ -602,7 +615,7 @@ func MatrixDeleteAtUnsafe[T foundation.Numeric](matrix memcore.MarkRaw, row, col
 //go:inline
 func MatrixClear[T foundation.Numeric](matrix memcore.MarkRaw) {
 	matrixPtr := memcore.MemcoreMarkDereferenceObjectUnsafe[Matrix[T]](matrix)
-	VectorClear[T](matrixPtr.data)
+	ArrayClearFast(matrixPtr.data, matrixPtr.dataBase)
 }
 
 // MatrixIsIdxValid checks whether the given (row, col) is valid.
@@ -622,7 +635,7 @@ func MatrixIsIdxValid[T foundation.Numeric](matrix memcore.MarkRaw, row, col uin
 // a > b : 1 (or positive)
 func MatrixSort[T foundation.Numeric](matrix memcore.MarkRaw, cmp func(a, b T) int) {
 	matrixPtr := memcore.MemcoreMarkDereferenceObjectUnsafe[Matrix[T]](matrix)
-	VectorSort(matrixPtr.data, cmp)
+	ArraySortRangeFast(matrixPtr.dataBase, matrixPtr.data, 0, matrixPtr.rows*matrixPtr.cols, cmp)
 }
 
 // MatrixSorted returns a sorted variant of this matrix.
@@ -640,7 +653,7 @@ func MatrixSorted[T foundation.Numeric](
 	matrixPtr := memcore.MemcoreMarkDereferenceObjectUnsafe[Matrix[T]](matrix)
 	targetMatrixPtr := memcore.MemcoreMarkDereferenceObjectUnsafe[Matrix[T]](targetMatrixAddr)
 
-	VectorSorted(matrixPtr.data, targetMatrixPtr.data, cmp)
+	ArraySortedFast(matrixPtr.data, matrixPtr.dataBase, targetMatrixPtr.data, targetMatrixPtr.dataBase, cmp)
 }
 
 // ---------------------------------------------------- MATRIX VIEW
@@ -731,7 +744,7 @@ func MatrixViewItemGetAt[T foundation.Numeric](matrixView MatrixView[T], relativ
 	col := matrixView.startCol + relativeCol
 	idx := matrixRowColToIdx(row, col, matrixPtr.cols)
 
-	return VectorItemGetAt[T](matrixPtr.data, idx)
+	return ArrayItemGetAtFast(matrixPtr.data, matrixPtr.dataBase, idx)
 }
 
 // MatrixViewItemPtrGetAt returns item pointer at (relativeRow, relativeCol) within the view.
@@ -757,7 +770,7 @@ func MatrixViewItemPtrGetAt[T foundation.Numeric](matrixView MatrixView[T], rela
 	col := matrixView.startCol + relativeCol
 	idx := matrixRowColToIdx(row, col, matrixPtr.cols)
 
-	return VectorItemPtrGetAt[T](matrixPtr.data, idx)
+	return ArrayItemPtrGetAtFast(matrixPtr.data, matrixPtr.dataBase, idx)
 }
 
 // MatrixViewItemSetAt sets the item at (relativeRow, relativeCol) within the view.
@@ -783,7 +796,7 @@ func MatrixViewItemSetAt[T foundation.Numeric](matrixView MatrixView[T], relativ
 	col := matrixView.startCol + relativeCol
 	idx := matrixRowColToIdx(row, col, matrixPtr.cols)
 
-	return VectorSetAt(matrixPtr.data, idx, v)
+	return ArraySetAtFast(matrixPtr.data, matrixPtr.dataBase, idx, v)
 }
 
 // MatrixViewForEach calls a function for every element in the matrix view.
@@ -801,7 +814,7 @@ func MatrixViewForEach[T foundation.Numeric](matrixView MatrixView[T], fn func(i
 			row := matrixView.startRow + relativeRow
 			col := matrixView.startCol + relativeCol
 			idx := matrixRowColToIdx(row, col, matrixPtr.cols)
-			val := VectorItemGetAtUnsafe[T](matrixPtr.data, idx)
+			val := ArrayItemGetAtUnsafeFast(matrixPtr.data, matrixPtr.dataBase, idx)
 			fn(val, relativeRow, relativeCol)
 		}
 	}
@@ -827,7 +840,7 @@ func MatrixViewForEachRaw[T foundation.Numeric](matrixView MatrixView[T], fn fun
 			row := matrixView.startRow + relativeRow
 			col := matrixView.startCol + relativeCol
 			idx := matrixRowColToIdx(row, col, matrixPtr.cols)
-			ptr := VectorItemPtrGetAtUnsafe[T](matrixPtr.data, idx)
+			ptr := ArrayItemPtrGetAtUnsafeFast(matrixPtr.data, matrixPtr.dataBase, idx)
 			fn(unsafe.Pointer(ptr), relativeRow, relativeCol)
 		}
 	}
@@ -890,8 +903,7 @@ func MatrixUnaryReadOnlyExecute[T foundation.Numeric](
 	op MatrixUnaryReadOnlyOp[T],
 	stride uint64,
 ) {
-	matrixPtr := memcore.MemcoreMarkDereferenceObjectUnsafe[Matrix[T]](matrixAddr)
-	VectorUnaryReadOnlyExecute(matrixPtr.data, VectorUnaryReadOnlyOp[T](op), stride)
+	VectorUnaryReadOnlyExecute(matrixVectorMark[T](matrixAddr), VectorUnaryReadOnlyOp[T](op), stride)
 }
 
 // MatrixUnaryExecute executes a stride of unary mutating operations,
@@ -911,7 +923,7 @@ func MatrixUnaryExecute[T, P foundation.Numeric](
 			srcMatrix.rows, srcMatrix.cols, dstMatrix.rows, dstMatrix.cols))
 	}
 
-	VectorUnaryExecute(srcMatrix.data, dstMatrix.data, VectorUnaryOp[T, P](op), stride)
+	VectorUnaryExecute(matrixVectorMark[T](srcAddr), matrixVectorMark[P](dstAddr), VectorUnaryOp[T, P](op), stride)
 }
 
 // MatrixBinaryReadOnlyExecute executes a stride of binary read-only operations
@@ -931,7 +943,7 @@ func MatrixBinaryReadOnlyExecute[T, U foundation.Numeric](
 			aMatrix.rows, aMatrix.cols, bMatrix.rows, bMatrix.cols))
 	}
 
-	VectorBinaryReadOnlyExecute(aMatrix.data, bMatrix.data, VectorBinaryReadOnlyOp[T, U](op), stride)
+	VectorBinaryReadOnlyExecute(matrixVectorMark[T](matrixAAddr), matrixVectorMark[U](matrixBAddr), VectorBinaryReadOnlyOp[T, U](op), stride)
 }
 
 // MatrixBinaryExecute executes a stride of binary mutating operations
@@ -953,5 +965,5 @@ func MatrixBinaryExecute[T, U, P foundation.Numeric](
 			aMatrix.rows, aMatrix.cols, bMatrix.rows, bMatrix.cols, dMatrix.rows, dMatrix.cols))
 	}
 
-	VectorBinaryExecute(aMatrix.data, bMatrix.data, dMatrix.data, VectorBinaryOp[T, U, P](op), stride)
+	VectorBinaryExecute(matrixVectorMark[T](matrixAAddr), matrixVectorMark[U](matrixBAddr), matrixVectorMark[P](destAddr), VectorBinaryOp[T, U, P](op), stride)
 }

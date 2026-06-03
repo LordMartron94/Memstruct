@@ -3,6 +3,7 @@ package memstruct
 import (
 	"fmt"
 	"memcore"
+	"unsafe"
 )
 
 //
@@ -21,17 +22,22 @@ import (
 // memcore namespace. Consequently, the list is fully relocatable and can be
 // snapshotted or restored purely through pointer-offset reconstruction.
 //
-// The struct itself does not contain Go pointers and is therefore safe to
-// allocate in manually managed memory, provided all subpointers are registered
-// in memcore before initialization.
+// Substructures are co-allocated in the same blob; the header caches *Array / *Stack
+// headers and data bases so internal paths use *Fast without repeated mark deref.
 //
 
 // FixedOrderedList is a relocatable, manually-managed sequential container.
 type FixedOrderedList[T any] struct {
-	dataArray        memcore.MarkRaw // Array[T]
-	indices          memcore.MarkRaw // Array[uint64]
-	freeList         memcore.MarkRaw // Stack[uint64]
-	freeListSnapshot memcore.MarkRaw // Stack[uint64]
+	dataArray        *Array[T]
+	dataArrayBase    unsafe.Pointer
+	indices          *Array[uint64]
+	indicesBase      unsafe.Pointer
+	freeList         *Stack[uint64]
+	freeListData     *Array[uint64]
+	freeListDataBase unsafe.Pointer
+	freeListSnapshot *Stack[uint64]
+	snapshotData     *Array[uint64]
+	snapshotDataBase unsafe.Pointer
 
 	length   uint64 // number of logically occupied slots
 	capacity uint64 // total available slots
@@ -115,21 +121,33 @@ func FixedOrderedListInitializeAt[T any](listAddr memcore.MarkRaw, capacity uint
 	StackInitializeAt[uint64](freeListPtr, capacity)
 	ArrayInitializeAt[T](dataPtr, capacity)
 
+	dataBase, dataInst := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[T]](dataPtr)
+	indicesBase, indicesInst := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[uint64]](indicesPtr)
+	freeList := memcore.MemcoreMarkDereferenceObjectUnsafe[Stack[uint64]](freeListPtr)
+	stackStorageWireAt(freeListPtr, freeList)
+	freeListSnapshot := memcore.MemcoreMarkDereferenceObjectUnsafe[Stack[uint64]](freeListSnapshotPtr)
+
 	// Populate freelist with all slots [0, capacity)
 	for i := uint64(0); i < capacity; i++ {
-		StackPushUnsafe(freeListPtr, i)
+		StackPushUnsafeFastAuto(freeList, i)
 	}
 
 	// Snapshot freelist for O(1) resets
 	StackSnapshotCreate[uint64](freeListSnapshotPtr, freeListPtr)
+	stackStorageWireAt(freeListSnapshotPtr, freeListSnapshot)
 
-	// Write header fields
 	list := memcore.MemcoreMarkDereferenceObject[FixedOrderedList[T]](listAddr)
 	*list = FixedOrderedList[T]{
-		dataArray:        dataPtr,
-		indices:          indicesPtr,
-		freeList:         freeListPtr,
-		freeListSnapshot: freeListSnapshotPtr,
+		dataArray:        dataInst,
+		dataArrayBase:    dataBase,
+		indices:          indicesInst,
+		indicesBase:      indicesBase,
+		freeList:         freeList,
+		freeListData:     freeList.data,
+		freeListDataBase: freeList.dataBase,
+		freeListSnapshot: freeListSnapshot,
+		snapshotData:     freeListSnapshot.data,
+		snapshotDataBase: freeListSnapshot.dataBase,
 		length:           0,
 		capacity:         capacity,
 		version:          1,
@@ -190,9 +208,9 @@ func FixedOrderedListAppend[T any](list memcore.MarkRaw, value T) error {
 	if instance.length >= instance.capacity {
 		return fmt.Errorf("fixed list full: capacity %d", instance.capacity)
 	}
-	slot := StackPopUnsafe[uint64](instance.freeList)
-	ArraySetAtUnsafe(instance.indices, instance.length, slot)
-	ArraySetAtUnsafe(instance.dataArray, slot, value)
+	slot := StackPopUnsafeFast(instance.freeList, instance.freeListData, instance.freeListDataBase)
+	ArraySetAtUnsafeFast(instance.indices, instance.indicesBase, instance.length, slot)
+	ArraySetAtUnsafeFast(instance.dataArray, instance.dataArrayBase, slot, value)
 	instance.length++
 	fixedOrderedListIncrementVersion[T](list)
 	return nil
@@ -201,9 +219,9 @@ func FixedOrderedListAppend[T any](list memcore.MarkRaw, value T) error {
 // FixedOrderedListAppendUnsafe appends without capacity validation.
 func FixedOrderedListAppendUnsafe[T any](list memcore.MarkRaw, value T) {
 	instance := memcore.MemcoreMarkDereferenceObject[FixedOrderedList[T]](list)
-	slot := StackPopUnsafe[uint64](instance.freeList)
-	ArraySetAtUnsafe(instance.indices, instance.length, slot)
-	ArraySetAtUnsafe(instance.dataArray, slot, value)
+	slot := StackPopUnsafeFast(instance.freeList, instance.freeListData, instance.freeListDataBase)
+	ArraySetAtUnsafeFast(instance.indices, instance.indicesBase, instance.length, slot)
+	ArraySetAtUnsafeFast(instance.dataArray, instance.dataArrayBase, slot, value)
 	instance.length++
 	fixedOrderedListIncrementVersion[T](list)
 }
@@ -218,8 +236,8 @@ func FixedOrderedListInsertAt[T any](list memcore.MarkRaw, idx uint64, value T) 
 	if instance.length >= instance.capacity {
 		return fmt.Errorf("no space left in fixed list")
 	}
-	slot := StackPopUnsafe[uint64](instance.freeList)
-	ArraySetAtUnsafe(instance.dataArray, slot, value)
+	slot := StackPopUnsafeFast(instance.freeList, instance.freeListData, instance.freeListDataBase)
+	ArraySetAtUnsafeFast(instance.dataArray, instance.dataArrayBase, slot, value)
 	fixedListInsertIndex(instance, idx, slot)
 	instance.length++
 	fixedOrderedListIncrementVersion[T](list)
@@ -229,8 +247,8 @@ func FixedOrderedListInsertAt[T any](list memcore.MarkRaw, idx uint64, value T) 
 // FixedOrderedListInsertAtUnsafe inserts without validation.
 func FixedOrderedListInsertAtUnsafe[T any](list memcore.MarkRaw, idx uint64, value T) {
 	instance := memcore.MemcoreMarkDereferenceObject[FixedOrderedList[T]](list)
-	slot := StackPopUnsafe[uint64](instance.freeList)
-	ArraySetAtUnsafe(instance.dataArray, slot, value)
+	slot := StackPopUnsafeFast(instance.freeList, instance.freeListData, instance.freeListDataBase)
+	ArraySetAtUnsafeFast(instance.dataArray, instance.dataArrayBase, slot, value)
 	fixedListInsertIndex(instance, idx, slot)
 	instance.length++
 	fixedOrderedListIncrementVersion[T](list)
@@ -244,9 +262,9 @@ func FixedOrderedListDelete[T any](list memcore.MarkRaw, idx uint64) error {
 	if err := fixedListGuaranteeIdxReadValidity(instance, idx); err != nil {
 		return err
 	}
-	slot := ArrayItemGetAtUnsafe[uint64](instance.indices, idx)
+	slot := ArrayItemGetAtUnsafeFast(instance.indices, instance.indicesBase, idx)
 	fixedListRemoveIndex(instance, idx)
-	StackPushUnsafe(instance.freeList, slot)
+	StackPushUnsafeFast(instance.freeList, instance.freeListData, instance.freeListDataBase, slot)
 	instance.length--
 	fixedOrderedListIncrementVersion[T](list)
 	return nil
@@ -255,9 +273,9 @@ func FixedOrderedListDelete[T any](list memcore.MarkRaw, idx uint64) error {
 // FixedOrderedListDeleteUnsafe deletes without validation.
 func FixedOrderedListDeleteUnsafe[T any](list memcore.MarkRaw, idx uint64) {
 	instance := memcore.MemcoreMarkDereferenceObject[FixedOrderedList[T]](list)
-	slot := ArrayItemGetAtUnsafe[uint64](instance.indices, idx)
+	slot := ArrayItemGetAtUnsafeFast(instance.indices, instance.indicesBase, idx)
 	fixedListRemoveIndex(instance, idx)
-	StackPushUnsafe(instance.freeList, slot)
+	StackPushUnsafeFast(instance.freeList, instance.freeListData, instance.freeListDataBase, slot)
 	instance.length--
 	fixedOrderedListIncrementVersion[T](list)
 }
@@ -364,7 +382,7 @@ func FixedOrderedListBinarySearchInsertionPoint[T any](list memcore.MarkRaw, pre
 // The underlying memory contents remain untouched.
 func FixedOrderedListClear[T any](list memcore.MarkRaw) {
 	instance := memcore.MemcoreMarkDereferenceObject[FixedOrderedList[T]](list)
-	StackSnapshotRestore[uint64](instance.freeList, instance.freeListSnapshot)
+	fixedListFreelistRestore(instance)
 	instance.length = 0
 	fixedOrderedListIncrementVersion[T](list)
 }
@@ -373,8 +391,8 @@ func FixedOrderedListClear[T any](list memcore.MarkRaw) {
 // all data array memory using zeroing semantics (useful for sensitive data).
 func FixedOrderedListClearAndZero[T any](list memcore.MarkRaw) {
 	instance := memcore.MemcoreMarkDereferenceObject[FixedOrderedList[T]](list)
-	ArrayClear[T](instance.dataArray)
-	StackSnapshotRestore[uint64](instance.freeList, instance.freeListSnapshot)
+	ArrayClearFast(instance.dataArray, instance.dataArrayBase)
+	fixedListFreelistRestore(instance)
 	instance.length = 0
 	fixedOrderedListIncrementVersion[T](list)
 }
@@ -420,32 +438,51 @@ func FixedOrderedListVersionGet[T any](list memcore.MarkRaw) uint64 {
 func fixedListInsertIndex[T any](list *FixedOrderedList[T], logicalIdx, slot uint64) {
 	n := list.length
 	for i := n; i > logicalIdx; i-- {
-		prev := ArrayItemGetAtUnsafe[uint64](list.indices, i-1)
-		ArraySetAtUnsafe(list.indices, i, prev)
+		prev := ArrayItemGetAtUnsafeFast(list.indices, list.indicesBase, i-1)
+		ArraySetAtUnsafeFast(list.indices, list.indicesBase, i, prev)
 	}
-	ArraySetAtUnsafe(list.indices, logicalIdx, slot)
+	ArraySetAtUnsafeFast(list.indices, list.indicesBase, logicalIdx, slot)
 }
 
 func fixedListRemoveIndex[T any](list *FixedOrderedList[T], logicalIdx uint64) {
 	n := list.length
 	for i := logicalIdx; i+1 < n; i++ {
-		next := ArrayItemGetAtUnsafe[uint64](list.indices, i+1)
-		ArraySetAtUnsafe(list.indices, i, next)
+		next := ArrayItemGetAtUnsafeFast(list.indices, list.indicesBase, i+1)
+		ArraySetAtUnsafeFast(list.indices, list.indicesBase, i, next)
 	}
 }
 
 func fixedListGetPhysicalIdx[T any](list *FixedOrderedList[T], logicalIdx uint64) uint64 {
-	return ArrayItemGetAtUnsafe[uint64](list.indices, logicalIdx)
+	return ArrayItemGetAtUnsafeFast(list.indices, list.indicesBase, logicalIdx)
 }
 
 func fixedListGetElement[T any](list *FixedOrderedList[T], logicalIdx uint64) T {
 	physicalIdx := fixedListGetPhysicalIdx(list, logicalIdx)
-	return ArrayItemGetAtUnsafe[T](list.dataArray, physicalIdx)
+	return ArrayItemGetAtUnsafeFast(list.dataArray, list.dataArrayBase, physicalIdx)
 }
 
 func fixedListGetElementPtr[T any](list *FixedOrderedList[T], logicalIdx uint64) *T {
 	physicalIdx := fixedListGetPhysicalIdx(list, logicalIdx)
-	return ArrayItemPtrGetAtUnsafe[T](list.dataArray, physicalIdx)
+	return ArrayItemPtrGetAtUnsafeFast(list.dataArray, list.dataArrayBase, physicalIdx)
+}
+
+func fixedListFreelistRestore[T any](list *FixedOrderedList[T]) {
+	if list.freeList.capacity != list.freeListSnapshot.capacity {
+		panic(fmt.Errorf(
+			"cannot restore stack snapshot: unequal capacities (%v vs %v)",
+			list.freeList.capacity,
+			list.freeListSnapshot.capacity,
+		))
+	}
+	if err := arraySnapshotRestoreFast(
+		list.freeListData,
+		list.snapshotData,
+		list.freeListDataBase,
+		list.snapshotDataBase,
+	); err != nil {
+		panic(err)
+	}
+	list.freeList.length = list.freeListSnapshot.length
 }
 
 func fixedListGuaranteeIdxInsertionValidity[T any](list *FixedOrderedList[T], idx uint64) error {

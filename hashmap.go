@@ -40,7 +40,10 @@ func (k *KeyValuePair[TKey, TValue]) Value() TValue { return k.value }
 
 // HashMap is a SwissTable-like open-addressing hashmap.
 type HashMap[TKey, TValue any] struct {
-	data, metaData        memcore.MarkRaw // backing arrays
+	data                  *Array[KeyValuePair[TKey, TValue]]
+	dataBase              unsafe.Pointer
+	meta                  *Array[ctrlGroup]
+	metaBase              unsafe.Pointer
 	capacity, logicalBins uint64
 	keyComparerID         memcore.FunctionID
 	keyMarkRetrieverID    memcore.FunctionID
@@ -107,8 +110,6 @@ func HashMapInitializeAt[TKey, TValue any](
 
 	header := memcore.MemcoreMarkDereferenceObject[HashMap[TKey, TValue]](addr)
 	*header = HashMap[TKey, TValue]{
-		data:               dataAddr,
-		metaData:           metaAddr,
 		capacity:           capacity,
 		logicalBins:        numGroups,
 		keyComparerID:      memcore.MemcoreFunctionRegisterTyped(keyCmp),
@@ -116,6 +117,7 @@ func HashMapInitializeAt[TKey, TValue any](
 		groupMask:          numGroups - 1,
 		version:            1,
 	}
+	hashMapStorageWireAt(addr, header)
 }
 
 // HashMapItemAdd inserts or updates a key–value pair.
@@ -134,18 +136,18 @@ func HashMapItemAdd[TKey, TValue any](instance memcore.MarkRaw, key TKey, value 
 		memcore.MemcoreFunctionRetrieveTyped[KeyComparer[TKey]](h.keyComparerID),
 	)
 	if found {
-		ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot).value = value
+		ArrayItemPtrGetAtUnsafeFast(h.data, h.dataBase, groupIDX*8+slot).value = value
 		return
 	}
 	if !hasFree {
 		panic("HashMapItemAdd: no space left")
 	}
 
-	pair := ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot)
+	pair := ArrayItemPtrGetAtUnsafeFast(h.data, h.dataBase, groupIDX*8+slot)
 	pair.value = value
 	pair.keyMark = keyMark
 	pair.keyUnsafe = uintptr(unsafe.Pointer(keyPtr))
-	ctrlPtr := ArrayItemPtrGetAtUnsafe[ctrlGroup](h.metaData, groupIDX)
+	ctrlPtr := ArrayItemPtrGetAtUnsafeFast(h.meta, h.metaBase, groupIDX)
 	*ctrlPtr = updateCtrlByte(*ctrlPtr, slot, ctrl(h2))
 }
 
@@ -168,7 +170,7 @@ func HashMapItemAddUnsafe[TKey, TValue any](instance memcore.MarkRaw, key TKey, 
 		memcore.MemcoreFunctionRetrieveTyped[KeyComparer[TKey]](h.keyComparerID),
 	)
 	if found {
-		ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot).value = value
+		ArrayItemPtrGetAtUnsafeFast(h.data, h.dataBase, groupIDX*8+slot).value = value
 		hashMapIncrementVersion[TKey, TValue](instance)
 		return
 	}
@@ -176,11 +178,11 @@ func HashMapItemAddUnsafe[TKey, TValue any](instance memcore.MarkRaw, key TKey, 
 		panic("HashMapItemAdd: no space left")
 	}
 
-	pair := ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot)
+	pair := ArrayItemPtrGetAtUnsafeFast(h.data, h.dataBase, groupIDX*8+slot)
 	pair.value = value
 	pair.keyMark = keyMark
 	pair.keyUnsafe = uintptr(unsafe.Pointer(keyPtr))
-	ctrlPtr := ArrayItemPtrGetAtUnsafe[ctrlGroup](h.metaData, groupIDX)
+	ctrlPtr := ArrayItemPtrGetAtUnsafeFast(h.meta, h.metaBase, groupIDX)
 	*ctrlPtr = updateCtrlByte(*ctrlPtr, slot, ctrl(h2))
 	hashMapIncrementVersion[TKey, TValue](instance)
 }
@@ -204,7 +206,7 @@ func HashMapItemAddFast[TKey, TValue any](
 		},
 		keyCmp)
 	if found {
-		ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot).value = value
+		ArrayItemPtrGetAtUnsafeFast(h.data, h.dataBase, groupIDX*8+slot).value = value
 		hashMapIncrementVersion[TKey, TValue](instance)
 		return
 	}
@@ -212,11 +214,11 @@ func HashMapItemAddFast[TKey, TValue any](
 		panic("HashMapItemAdd: no space left")
 	}
 
-	pair := ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot)
+	pair := ArrayItemPtrGetAtUnsafeFast(h.data, h.dataBase, groupIDX*8+slot)
 	pair.value = value
 	pair.keyMark = keyMark
 	pair.keyUnsafe = uintptr(unsafe.Pointer(keyPtr))
-	ctrlPtr := ArrayItemPtrGetAtUnsafe[ctrlGroup](h.metaData, groupIDX)
+	ctrlPtr := ArrayItemPtrGetAtUnsafeFast(h.meta, h.metaBase, groupIDX)
 	*ctrlPtr = updateCtrlByte(*ctrlPtr, slot, ctrl(h2))
 	hashMapIncrementVersion[TKey, TValue](instance)
 }
@@ -243,7 +245,7 @@ func HashMapItemAddFastUnsafe[TKey, TValue any](
 		},
 		keyCmp)
 	if found {
-		ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot).value = value
+		ArrayItemPtrGetAtUnsafeFast(h.data, h.dataBase, groupIDX*8+slot).value = value
 		hashMapIncrementVersion[TKey, TValue](instance)
 		return
 	}
@@ -251,11 +253,11 @@ func HashMapItemAddFastUnsafe[TKey, TValue any](
 		panic("HashMapItemAdd: no space left")
 	}
 
-	pair := ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot)
+	pair := ArrayItemPtrGetAtUnsafeFast(h.data, h.dataBase, groupIDX*8+slot)
 	pair.value = value
 	pair.keyMark = keyMark
 	pair.keyUnsafe = uintptr(unsafe.Pointer(keyPtr))
-	ctrlPtr := ArrayItemPtrGetAtUnsafe[ctrlGroup](h.metaData, groupIDX)
+	ctrlPtr := ArrayItemPtrGetAtUnsafeFast(h.meta, h.metaBase, groupIDX)
 	*ctrlPtr = updateCtrlByte(*ctrlPtr, slot, ctrl(h2))
 	hashMapIncrementVersion[TKey, TValue](instance)
 }
@@ -281,7 +283,7 @@ func HashMapItemGet[TKey, TValue any](instance memcore.MarkRaw, key TKey) (TValu
 		var zero TValue
 		return zero, fmt.Errorf("key not found")
 	}
-	return ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot).value, nil
+	return ArrayItemPtrGetAtUnsafeFast(h.data, h.dataBase, groupIDX*8+slot).value, nil
 }
 
 // HashMapItemGetFast retrieves the value for a key.
@@ -309,7 +311,7 @@ func HashMapItemGetFast[TKey, TValue any](
 		var zero TValue
 		return zero, fmt.Errorf("key not found")
 	}
-	return ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot).value, nil
+	return ArrayItemPtrGetAtUnsafeFast(h.data, h.dataBase, groupIDX*8+slot).value, nil
 }
 
 // HashMapItemGetUnsafe retrieves the value for a key.
@@ -336,7 +338,7 @@ func HashMapItemGetUnsafe[TKey, TValue any](instance memcore.MarkRaw, key TKey) 
 		var zero TValue
 		return zero, fmt.Errorf("key not found")
 	}
-	return ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot).value, nil
+	return ArrayItemPtrGetAtUnsafeFast(h.data, h.dataBase, groupIDX*8+slot).value, nil
 }
 
 // HashMapItemGetFastUnsafe retrieves the value for a key.
@@ -367,7 +369,7 @@ func HashMapItemGetFastUnsafe[TKey, TValue any](
 		var zero TValue
 		return zero, fmt.Errorf("key not found")
 	}
-	return ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot).value, nil
+	return ArrayItemPtrGetAtUnsafeFast(h.data, h.dataBase, groupIDX*8+slot).value, nil
 }
 
 // HashMapItemPtrGet returns a pointer to a value (not safe to persist).
@@ -390,7 +392,7 @@ func HashMapItemPtrGet[TKey, TValue any](instance memcore.MarkRaw, key TKey) (*T
 	if !found {
 		return nil, fmt.Errorf("key not found")
 	}
-	pair := ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot)
+	pair := ArrayItemPtrGetAtUnsafeFast(h.data, h.dataBase, groupIDX*8+slot)
 	return &pair.value, nil
 }
 
@@ -418,7 +420,7 @@ func HashMapItemPtrGetFast[TKey, TValue any](
 	if !found {
 		return nil, fmt.Errorf("key not found")
 	}
-	pair := ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot)
+	pair := ArrayItemPtrGetAtUnsafeFast(h.data, h.dataBase, groupIDX*8+slot)
 	return &pair.value, nil
 }
 
@@ -445,7 +447,7 @@ func HashMapItemPtrGetUnsafe[TKey, TValue any](instance memcore.MarkRaw, key TKe
 	if !found {
 		return nil, fmt.Errorf("key not found")
 	}
-	return &ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot).value, nil
+	return &ArrayItemPtrGetAtUnsafeFast(h.data, h.dataBase, groupIDX*8+slot).value, nil
 }
 
 // HashMapItemPtrGetFastUnsafe retrieves the pointer of the value for a key.
@@ -475,7 +477,7 @@ func HashMapItemPtrGetFastUnsafe[TKey, TValue any](
 	if !found {
 		return nil, fmt.Errorf("key not found")
 	}
-	return &ArrayItemPtrGetAtUnsafe[KeyValuePair[TKey, TValue]](h.data, groupIDX*8+slot).value, nil
+	return &ArrayItemPtrGetAtUnsafeFast(h.data, h.dataBase, groupIDX*8+slot).value, nil
 }
 
 // HashMapItemDelete marks an entry as deleted.
@@ -499,7 +501,7 @@ func HashMapItemDelete[TKey, TValue any](instance memcore.MarkRaw, key TKey) {
 		return
 	}
 
-	ctrlPtr := ArrayItemPtrGetAtUnsafe[ctrlGroup](h.metaData, groupIDX)
+	ctrlPtr := ArrayItemPtrGetAtUnsafeFast(h.meta, h.metaBase, groupIDX)
 	*ctrlPtr = updateCtrlByte(*ctrlPtr, slot, ctrlDeleted)
 	hashMapIncrementVersion[TKey, TValue](instance)
 }
@@ -529,7 +531,7 @@ func HashMapItemDeleteFast[TKey, TValue any](
 		return
 	}
 
-	ctrlPtr := ArrayItemPtrGetAtUnsafe[ctrlGroup](h.metaData, groupIDX)
+	ctrlPtr := ArrayItemPtrGetAtUnsafeFast(h.meta, h.metaBase, groupIDX)
 	*ctrlPtr = updateCtrlByte(*ctrlPtr, slot, ctrlDeleted)
 	hashMapIncrementVersion[TKey, TValue](instance)
 }
@@ -558,7 +560,7 @@ func HashMapItemDeleteUnsafe[TKey, TValue any](instance memcore.MarkRaw, key TKe
 		return
 	}
 
-	ctrlPtr := ArrayItemPtrGetAtUnsafe[ctrlGroup](h.metaData, groupIDX)
+	ctrlPtr := ArrayItemPtrGetAtUnsafeFast(h.meta, h.metaBase, groupIDX)
 	*ctrlPtr = updateCtrlByte(*ctrlPtr, slot, ctrlDeleted)
 	hashMapIncrementVersion[TKey, TValue](instance)
 }
@@ -591,7 +593,7 @@ func HashMapItemDeleteFastUnsafe[TKey, TValue any](
 		return
 	}
 
-	ctrlPtr := ArrayItemPtrGetAtUnsafe[ctrlGroup](h.metaData, groupIDX)
+	ctrlPtr := ArrayItemPtrGetAtUnsafeFast(h.meta, h.metaBase, groupIDX)
 	*ctrlPtr = updateCtrlByte(*ctrlPtr, slot, ctrlDeleted)
 	hashMapIncrementVersion[TKey, TValue](instance)
 }
@@ -605,7 +607,7 @@ func HashMapClear[TKey, TValue any](instance memcore.MarkRaw) {
 	h := memcore.MemcoreMarkDereferenceObjectUnsafe[HashMap[TKey, TValue]](instance)
 
 	// ─── Reset metadata control groups ───
-	ArrayForEachUnsafe[ctrlGroup](h.metaData, func(ptr unsafe.Pointer, _ uint64) {
+	ArrayForEachUnsafeFast(h.meta, h.metaBase, func(ptr unsafe.Pointer, _ uint64) {
 		*(*uint64)(ptr) = bitsetEmpty
 	})
 	hashMapIncrementVersion[TKey, TValue](instance)
@@ -614,8 +616,8 @@ func HashMapClear[TKey, TValue any](instance memcore.MarkRaw) {
 // HashMapClearAndZero fully zeroes metadata and data sections.
 func HashMapClearAndZero[TKey, TValue any](instance memcore.MarkRaw) {
 	h := memcore.MemcoreMarkDereferenceObjectUnsafe[HashMap[TKey, TValue]](instance)
-	ArrayForEachUnsafe[ctrlGroup](h.metaData, func(p unsafe.Pointer, _ uint64) { *(*uint64)(p) = bitsetEmpty })
-	ArrayClear[KeyValuePair[TKey, TValue]](h.data)
+	ArrayForEachUnsafeFast(h.meta, h.metaBase, func(p unsafe.Pointer, _ uint64) { *(*uint64)(p) = bitsetEmpty })
+	ArrayClearFast(h.data, h.dataBase)
 	hashMapIncrementVersion[TKey, TValue](instance)
 }
 
@@ -627,11 +629,8 @@ func HashMapForEach[TKey, TValue any](
 ) {
 	h := memcore.MemcoreMarkDereferenceObjectUnsafe[HashMap[TKey, TValue]](instance)
 
-	dataCur := ArrayCursorCreate[KeyValuePair[TKey, TValue]](h.data)
-	metaCur := ArrayCursorCreate[ctrlGroup](h.metaData)
-
 	for g := uint64(0); g < h.logicalBins; g++ {
-		ctrl := *metaCur.PtrAt(g)
+		ctrl := *ArrayItemPtrGetAtUnsafeFast(h.meta, h.metaBase, g)
 		liveMask := ^ctrlGroupMatchEmptyOrDeleted(ctrl)
 
 		if liveMask == 0 {
@@ -643,7 +642,7 @@ func HashMapForEach[TKey, TValue any](
 			s := bitsetNextIndex(m)
 			m &= m - 1
 
-			pair := dataCur.PtrAt(g*8 + s)
+			pair := ArrayItemPtrGetAtUnsafeFast(h.data, h.dataBase, g*8+s)
 			key := memcore.MemcoreMarkDereferenceObjectUnsafe[TKey](pair.keyMark)
 			if !fn(key, &pair.value) {
 				return
@@ -710,9 +709,6 @@ func hashMapProbe[TKey, TValue any](
 	groupStart := h1 & mask
 	availGroup, availSlot := noIdx, noIdx
 
-	dataCur := ArrayCursorCreate[KeyValuePair[TKey, TValue]](h.data)
-	metaCur := ArrayCursorCreate[ctrlGroup](h.metaData)
-
 	// Align start down to a block of 4 groups
 	base := groupStart &^ 3
 
@@ -727,7 +723,7 @@ func hashMapProbe[TKey, TValue any](
 		var ctrl [4]ctrlGroup
 		for i := uint64(0); i < n; i++ {
 			g := (base + i) & mask
-			ctrl[i] = *metaCur.PtrAt(g)
+			ctrl[i] = *ArrayItemPtrGetAtUnsafeFast(h.meta, h.metaBase, g)
 		}
 
 		// 1) Match candidates in order (base, base+1, base+2, base+3)
@@ -738,7 +734,7 @@ func hashMapProbe[TKey, TValue any](
 				s := bitsetNextIndex(m)
 				m &= m - 1
 
-				pair := dataCur.PtrAt(g*8 + s)
+				pair := ArrayItemPtrGetAtUnsafeFast(h.data, h.dataBase, g*8+s)
 				pairKey := pairKeyAccessor(pair)
 				if keyCmp(pairKey, key) {
 					return g, s, true, false

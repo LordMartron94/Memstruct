@@ -10,11 +10,12 @@ import (
 // When full, adding a new element automatically removes the oldest element.
 // Optimized for statistics operations that need to iterate over all elements.
 type CircularBuffer[T any] struct {
-	data     memcore.MarkRaw // Array[T] for storage
-	startIdx uint64          // Logical start index (oldest element position in array)
-	length   uint64          // Current number of elements in the window
-	capacity uint64          // Maximum capacity
-	version  uint64          // Version tracking for cache invalidation
+	data     *Array[T]
+	dataBase unsafe.Pointer
+	startIdx uint64
+	length   uint64
+	capacity uint64
+	version  uint64
 }
 
 // CircularBufferRequiredBytesGet returns total bytes required for a circular buffer of given capacity.
@@ -52,12 +53,12 @@ func CircularBufferInitializeAt[T any](bufferAddr memcore.MarkRaw, capacity uint
 	// Initialize circular buffer header itself
 	bufferPtr := memcore.MemcoreMarkDereferenceObject[CircularBuffer[T]](bufferAddr)
 	*bufferPtr = CircularBuffer[T]{
-		data:     arrayPtr,
 		startIdx: 0,
 		length:   0,
 		capacity: capacity,
 		version:  1,
 	}
+	circularBufferStorageWireAt(bufferAddr, bufferPtr)
 }
 
 // CircularBufferSnapshotCreate creates a deep snapshot of a circular buffer at a new location.
@@ -69,6 +70,8 @@ func CircularBufferSnapshotCreate[T any](dest memcore.MarkRaw, instance memcore.
 	dstAddr := memcore.MemcoreMarkDereference(dest)
 	memcore.MemoryMoveNoHeapPointers(dstAddr, srcAddr, uintptr(totalSize))
 
+	dstBuffer := memcore.MemcoreMarkDereferenceObject[CircularBuffer[T]](dest)
+	circularBufferStorageWireAt(dest, dstBuffer)
 	return dest
 }
 
@@ -81,7 +84,9 @@ func CircularBufferSnapshotRestore[T any](dest memcore.MarkRaw, src memcore.Mark
 		panic(fmt.Errorf("cannot restore circular buffer snapshot: unequal capacities (%v vs %v)", dstBuffer.capacity, srcBuffer.capacity))
 	}
 
-	ArraySnapshotRestore[T](dstBuffer.data, srcBuffer.data)
+	if err := arraySnapshotRestoreFast(dstBuffer.data, srcBuffer.data, dstBuffer.dataBase, srcBuffer.dataBase); err != nil {
+		panic(err)
+	}
 	dstBuffer.startIdx = srcBuffer.startIdx
 	dstBuffer.length = srcBuffer.length
 	dstBuffer.version = srcBuffer.version
@@ -95,12 +100,12 @@ func CircularBufferPush[T any](buffer memcore.MarkRaw, item T) {
 
 	if instance.length >= instance.capacity {
 		// Buffer is full, overwrite oldest element
-		ArraySetAtUnsafe(instance.data, instance.startIdx, item)
+		ArraySetAtUnsafeFast(instance.data, instance.dataBase, instance.startIdx, item)
 		instance.startIdx = (instance.startIdx + 1) % instance.capacity
 	} else {
 		// Buffer has space, add to end
 		insertIdx := (instance.startIdx + instance.length) % instance.capacity
-		ArraySetAtUnsafe(instance.data, insertIdx, item)
+		ArraySetAtUnsafeFast(instance.data, instance.dataBase, insertIdx, item)
 		instance.length++
 	}
 
@@ -144,7 +149,7 @@ func CircularBufferGetAt[T any](buffer memcore.MarkRaw, logicalIdx uint64) T {
 	}
 
 	physicalIdx := (instance.startIdx + logicalIdx) % instance.capacity
-	return ArrayItemGetAtUnsafe[T](instance.data, physicalIdx)
+	return ArrayItemGetAtUnsafeFast(instance.data, instance.dataBase, physicalIdx)
 }
 
 // CircularBufferGetAtUnsafe returns the element at logical index without bounds checking.
@@ -154,7 +159,7 @@ func CircularBufferGetAt[T any](buffer memcore.MarkRaw, logicalIdx uint64) T {
 func CircularBufferGetAtUnsafe[T any](buffer memcore.MarkRaw, logicalIdx uint64) T {
 	instance := memcore.MemcoreMarkDereferenceObject[CircularBuffer[T]](buffer)
 	physicalIdx := (instance.startIdx + logicalIdx) % instance.capacity
-	return ArrayItemGetAtUnsafe[T](instance.data, physicalIdx)
+	return ArrayItemGetAtUnsafeFast(instance.data, instance.dataBase, physicalIdx)
 }
 
 // CircularBufferClear resets the buffer to empty state (does not zero memory).
@@ -174,7 +179,7 @@ func CircularBufferClear[T any](buffer memcore.MarkRaw) {
 //go:nosplit
 func CircularBufferClearAndZero[T any](buffer memcore.MarkRaw) {
 	instance := memcore.MemcoreMarkDereferenceObject[CircularBuffer[T]](buffer)
-	ArrayClear[T](instance.data)
+	ArrayClearFast(instance.data, instance.dataBase)
 	instance.length = 0
 	instance.startIdx = 0
 	instance.version++
@@ -215,7 +220,7 @@ func CircularBufferItemPtrGetAt[T any](buffer memcore.MarkRaw, logicalIdx uint64
 	}
 
 	physicalIdx := (instance.startIdx + logicalIdx) % instance.capacity
-	return ArrayItemPtrGetAtUnsafe[T](instance.data, physicalIdx), nil
+	return ArrayItemPtrGetAtUnsafeFast(instance.data, instance.dataBase, physicalIdx), nil
 }
 
 // CircularBufferItemPtrGetAtUnsafe returns a pointer to T at logical index without bounds checking.
@@ -228,7 +233,7 @@ func CircularBufferItemPtrGetAt[T any](buffer memcore.MarkRaw, logicalIdx uint64
 func CircularBufferItemPtrGetAtUnsafe[T any](buffer memcore.MarkRaw, logicalIdx uint64) *T {
 	instance := memcore.MemcoreMarkDereferenceObject[CircularBuffer[T]](buffer)
 	physicalIdx := (instance.startIdx + logicalIdx) % instance.capacity
-	return ArrayItemPtrGetAtUnsafe[T](instance.data, physicalIdx)
+	return ArrayItemPtrGetAtUnsafeFast(instance.data, instance.dataBase, physicalIdx)
 }
 
 // CircularBufferDataPtrGet returns the current pointer to the underlying array data storage in memory.
@@ -238,7 +243,7 @@ func CircularBufferItemPtrGetAtUnsafe[T any](buffer memcore.MarkRaw, logicalIdx 
 //go:inline
 func CircularBufferDataPtrGet[T any](buffer memcore.MarkRaw) unsafe.Pointer {
 	instance := memcore.MemcoreMarkDereferenceObject[CircularBuffer[T]](buffer)
-	return ArrayDataPtrGet[T](instance.data)
+	return ArrayDataPtrGetFast(instance.data, instance.dataBase)
 }
 
 // CircularBufferByteOffsetGetAt returns the offset relative to the memory region for this logical index.
@@ -253,7 +258,7 @@ func CircularBufferByteOffsetGetAt[T any](buffer memcore.MarkRaw, logicalIdx uin
 	}
 
 	physicalIdx := (instance.startIdx + logicalIdx) % instance.capacity
-	return ArrayByteOffsetGetAtUnsafe[T](instance.data, physicalIdx)
+	return ArrayByteOffsetGetAtUnsafeFast(instance.data, physicalIdx)
 }
 
 // CircularBufferByteOffsetGetAtUnsafe returns the offset relative to the memory region for this logical index.
@@ -263,7 +268,7 @@ func CircularBufferByteOffsetGetAt[T any](buffer memcore.MarkRaw, logicalIdx uin
 func CircularBufferByteOffsetGetAtUnsafe[T any](buffer memcore.MarkRaw, logicalIdx uint64) uintptr {
 	instance := memcore.MemcoreMarkDereferenceObject[CircularBuffer[T]](buffer)
 	physicalIdx := (instance.startIdx + logicalIdx) % instance.capacity
-	return ArrayByteOffsetGetAtUnsafe[T](instance.data, physicalIdx)
+	return ArrayByteOffsetGetAtUnsafeFast(instance.data, physicalIdx)
 }
 
 // CircularBufferIsIdxValid checks whether the given logical index is valid.
@@ -286,8 +291,7 @@ func circularBufferLogicalToPhysical[T any](instance *CircularBuffer[T], logical
 //go:inline
 func circularBufferGetArrayPtrAtLogicalIdx[T any](instance *CircularBuffer[T], logicalIdx uint64) unsafe.Pointer {
 	physicalIdx := circularBufferLogicalToPhysical[T](instance, logicalIdx)
-	arrayBase, arrayInst := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[T]](instance.data)
-	return arrayGetPtrAtIdx(arrayInst, arrayBase, physicalIdx)
+	return arrayGetPtrAtIdx(instance.data, instance.dataBase, physicalIdx)
 }
 
 // CircularBufferForEachUnsafe calls a function for every element in the circular buffer.
@@ -675,13 +679,11 @@ func CircularBufferUnaryExecute[T, P any](
 		return
 	}
 
-	srcArrayBase, srcArrayInst := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[T]](srcInstance.data)
-	srcArrayData := arrayComputeDataAddr(srcArrayInst, srcArrayBase)
-	srcItemSize := uintptr(srcArrayInst.itemSize)
+	srcArrayData := arrayComputeDataAddr(srcInstance.data, srcInstance.dataBase)
+	srcItemSize := uintptr(srcInstance.data.itemSize)
 
-	dstArrayBase, dstArrayInst := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[P]](dstInstance.data)
-	dstArrayData := arrayComputeDataAddr(dstArrayInst, dstArrayBase)
-	dstItemSize := uintptr(dstArrayInst.itemSize)
+	dstArrayData := arrayComputeDataAddr(dstInstance.data, dstInstance.dataBase)
+	dstItemSize := uintptr(dstInstance.data.itemSize)
 
 	circularBufferUnrolledDispatch[T](srcInstance, stride, func(logicalIdx uint64) {
 		srcPhysicalIdx := circularBufferLogicalToPhysical[T](srcInstance, logicalIdx)
@@ -708,9 +710,8 @@ func CircularBufferUnaryReadOnlyExecute[T any](
 		return
 	}
 
-	arrayBase, arrayInst := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[T]](instance.data)
-	arrayData := arrayComputeDataAddr(arrayInst, arrayBase)
-	itemSize := uintptr(arrayInst.itemSize)
+	arrayData := arrayComputeDataAddr(instance.data, instance.dataBase)
+	itemSize := uintptr(instance.data.itemSize)
 
 	circularBufferUnrolledDispatch[T](instance, stride, func(logicalIdx uint64) {
 		physicalIdx := circularBufferLogicalToPhysical[T](instance, logicalIdx)
@@ -739,13 +740,11 @@ func CircularBufferBinaryReadOnlyExecute[T, U any](
 		return
 	}
 
-	arrayABase, arrayAInst := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[T]](instanceA.data)
-	arrayAData := arrayComputeDataAddr(arrayAInst, arrayABase)
-	aItemSize := uintptr(arrayAInst.itemSize)
+	arrayAData := arrayComputeDataAddr(instanceA.data, instanceA.dataBase)
+	aItemSize := uintptr(instanceA.data.itemSize)
 
-	arrayBBase, arrayBInst := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[U]](instanceB.data)
-	arrayBData := arrayComputeDataAddr(arrayBInst, arrayBBase)
-	bItemSize := uintptr(arrayBInst.itemSize)
+	arrayBData := arrayComputeDataAddr(instanceB.data, instanceB.dataBase)
+	bItemSize := uintptr(instanceB.data.itemSize)
 
 	circularBufferUnrolledDispatch[T](instanceA, stride, func(logicalIdx uint64) {
 		physicalIdxA := circularBufferLogicalToPhysical[T](instanceA, logicalIdx)
@@ -777,17 +776,14 @@ func CircularBufferBinaryExecute[T, U, P any](
 		return
 	}
 
-	arrayABase, arrayAInst := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[T]](instanceA.data)
-	arrayAData := arrayComputeDataAddr(arrayAInst, arrayABase)
-	aItemSize := uintptr(arrayAInst.itemSize)
+	arrayAData := arrayComputeDataAddr(instanceA.data, instanceA.dataBase)
+	aItemSize := uintptr(instanceA.data.itemSize)
 
-	arrayBBase, arrayBInst := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[U]](instanceB.data)
-	arrayBData := arrayComputeDataAddr(arrayBInst, arrayBBase)
-	bItemSize := uintptr(arrayBInst.itemSize)
+	arrayBData := arrayComputeDataAddr(instanceB.data, instanceB.dataBase)
+	bItemSize := uintptr(instanceB.data.itemSize)
 
-	destArrayBase, destArrayInst := memcore.MemcoreMarkDereferenceObjectAltUnsafe[Array[P]](destInstance.data)
-	destArrayData := arrayComputeDataAddr(destArrayInst, destArrayBase)
-	destItemSize := uintptr(destArrayInst.itemSize)
+	destArrayData := arrayComputeDataAddr(destInstance.data, destInstance.dataBase)
+	destItemSize := uintptr(destInstance.data.itemSize)
 
 	circularBufferUnrolledDispatch[T](instanceA, stride, func(logicalIdx uint64) {
 		physicalIdxA := circularBufferLogicalToPhysical[T](instanceA, logicalIdx)
@@ -846,8 +842,8 @@ func CircularBufferCopyFrom[T any](destBuffer, srcBuffer memcore.MarkRaw) error 
 	for logicalIdx := uint64(0); logicalIdx < destInstance.length; logicalIdx++ {
 		srcPhysicalIdx := circularBufferLogicalToPhysical[T](srcInstance, logicalIdx)
 		destPhysicalIdx := circularBufferLogicalToPhysical[T](destInstance, logicalIdx)
-		item := ArrayItemGetAtUnsafe[T](srcInstance.data, srcPhysicalIdx)
-		ArraySetAtUnsafe[T](destInstance.data, destPhysicalIdx, item)
+		item := ArrayItemGetAtUnsafeFast(srcInstance.data, srcInstance.dataBase, srcPhysicalIdx)
+		ArraySetAtUnsafeFast(destInstance.data, destInstance.dataBase, destPhysicalIdx, item)
 	}
 
 	destInstance.version++
@@ -887,8 +883,8 @@ func CircularBufferCopyFromRange[T any](
 		destLogicalIdx := destStartIdx + i
 		srcPhysicalIdx := circularBufferLogicalToPhysical[T](srcInstance, srcLogicalIdx)
 		destPhysicalIdx := circularBufferLogicalToPhysical[T](destInstance, destLogicalIdx)
-		item := ArrayItemGetAtUnsafe[T](srcInstance.data, srcPhysicalIdx)
-		ArraySetAtUnsafe[T](destInstance.data, destPhysicalIdx, item)
+		item := ArrayItemGetAtUnsafeFast(srcInstance.data, srcInstance.dataBase, srcPhysicalIdx)
+		ArraySetAtUnsafeFast(destInstance.data, destInstance.dataBase, destPhysicalIdx, item)
 	}
 
 	destInstance.version++

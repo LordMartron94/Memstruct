@@ -3,6 +3,7 @@ package memstruct
 import (
 	"fmt"
 	"memcore"
+	"unsafe"
 )
 
 // --------------------------------------------------- MEMORY MANAGEMENT
@@ -17,7 +18,8 @@ func PriorityQueueRequiredAlignmentGet[T any]() uint64 {
 
 // PriorityQueue is a highly efficient priority queue implementation.
 type PriorityQueue[T any] struct {
-	data     memcore.MarkRaw // Array[T]
+	data     *Array[T]
+	dataBase unsafe.Pointer
 	length   uint64
 	capacity uint64
 	version  uint64
@@ -27,16 +29,15 @@ type PriorityQueue[T any] struct {
 func PriorityQueueInitializeAt[T any](addr memcore.MarkRaw, capacityElements uint64) {
 	header := memcore.MemcoreMarkDereferenceObject[PriorityQueue[T]](addr)
 
-	offsetData := uintptr(memcore.SizeOf[PriorityQueue[T]]())
-	dataMark := memcore.MemcoreMarkOffsetFrom(addr, offsetData)
+	dataMark := memcore.MemcoreMarkOffsetFrom(addr, uintptr(memcore.SizeOf[PriorityQueue[T]]()))
 	ArrayInitializeAt[T](dataMark, capacityElements)
 
 	*header = PriorityQueue[T]{
-		data:     dataMark,
 		length:   0,
 		capacity: capacityElements,
 		version:  1,
 	}
+	priorityQueueStorageWireAt(addr, header)
 }
 
 // PriorityQueueInitializeFrom initializes a new priority queue at pqAddr using the contents of src.
@@ -63,12 +64,10 @@ func PriorityQueueCopyFrom[T any](dest memcore.MarkRaw, src memcore.MarkRaw) err
 
 	// We only copy the active range [0, length).
 	// We use the Array primitives to handle the raw data movement.
-	err := ArrayCopyFromRange[T](
-		destHeader.data,  // Dest Array
-		srcHeader.data,   // Source Array
-		0,                // From (inclusive)
-		srcHeader.length, // To (exclusive)
-		0,                // Dest Start Index
+	err := ArrayCopyFromRangeFast(
+		destHeader.data, destHeader.dataBase,
+		srcHeader.data, srcHeader.dataBase,
+		0, srcHeader.length, 0,
 	)
 
 	if err != nil {
@@ -96,10 +95,7 @@ func PriorityQueueSnapshotCreate[T any](dest memcore.MarkRaw, instance memcore.M
 	memcore.MemoryMoveNoHeapPointers(dstAddr, srcAddr, uintptr(totalSize))
 
 	dstHeader := memcore.MemcoreMarkDereferenceObjectUnsafe[PriorityQueue[T]](dest)
-	offsetData := uintptr(memcore.SizeOf[PriorityQueue[T]]())
-
-	dstHeader.data = memcore.MemcoreMarkOffsetFrom(dest, offsetData)
-
+	priorityQueueStorageWireAt(dest, dstHeader)
 	return dest
 }
 
@@ -124,9 +120,7 @@ func PriorityQueueSnapshotRestore[T any](dest, src memcore.MarkRaw) error {
 
 	memcore.MemoryMoveNoHeapPointers(dstAddr, srcAddr, uintptr(totalBytes))
 
-	offsetData := uintptr(memcore.SizeOf[PriorityQueue[T]]())
-	dstHeader.data = memcore.MemcoreMarkOffsetFrom(dest, offsetData)
-
+	priorityQueueStorageWireAt(dest, dstHeader)
 	return nil
 }
 
@@ -142,7 +136,7 @@ func PriorityQueueClearAndZero[T any](queue memcore.MarkRaw) {
 	header := memcore.MemcoreMarkDereferenceObject[PriorityQueue[T]](queue)
 	header.length = 0
 
-	ArrayClear[T](header.data)
+	ArrayClearFast(header.data, header.dataBase)
 	priorityQueueIncrementVersion[T](queue)
 }
 
@@ -160,7 +154,7 @@ func PriorityQueuePush[T any](queue memcore.MarkRaw, item T, less func(a, b T) b
 	}
 
 	// Insert at the end
-	ArraySetAtUnsafe(instance.data, instance.length, item)
+	ArraySetAtUnsafeFast(instance.data, instance.dataBase, instance.length, item)
 	instance.length++
 
 	// Restore heap property
@@ -182,12 +176,12 @@ func PriorityQueuePop[T any](queue memcore.MarkRaw, less func(a, b T) bool) (T, 
 	}
 
 	// 1. Read the root (min item)
-	root := ArrayItemGetAtUnsafe[T](instance.data, 0)
+	root := ArrayItemGetAtUnsafeFast(instance.data, instance.dataBase, 0)
 
 	// 2. Move the last item to the root position
 	lastIdx := instance.length - 1
-	lastItem := ArrayItemGetAtUnsafe[T](instance.data, lastIdx)
-	ArraySetAtUnsafe(instance.data, 0, lastItem)
+	lastItem := ArrayItemGetAtUnsafeFast(instance.data, instance.dataBase, lastIdx)
+	ArraySetAtUnsafeFast(instance.data, instance.dataBase, 0, lastItem)
 
 	// 3. Decrease length (effectively deleting the last item)
 	instance.length--
@@ -213,7 +207,7 @@ func PriorityQueuePeek[T any](queue memcore.MarkRaw) (T, error) {
 		return zero, fmt.Errorf("priority queue empty")
 	}
 
-	return ArrayItemGetAtUnsafe[T](instance.data, 0), nil
+	return ArrayItemGetAtUnsafeFast(instance.data, instance.dataBase, 0), nil
 }
 
 // PriorityQueueIsEmpty checks if the queue is empty.
@@ -265,15 +259,15 @@ func pqSiftUp[T any](pq *PriorityQueue[T], idx uint64, less func(a, b T) bool) {
 	for currentIdx > 0 {
 		parentIdx := getParentIdx(currentIdx)
 
-		currentVal := ArrayItemGetAtUnsafe[T](pq.data, currentIdx)
-		parentVal := ArrayItemGetAtUnsafe[T](pq.data, parentIdx)
+		currentVal := ArrayItemGetAtUnsafeFast(pq.data, pq.dataBase, currentIdx)
+		parentVal := ArrayItemGetAtUnsafeFast(pq.data, pq.dataBase, parentIdx)
 
 		// If parent is already smaller (or equal), we are done (Min Heap)
 		if !less(currentVal, parentVal) {
 			break
 		}
 
-		pqSwapUnsafe(pq.data, currentIdx, parentIdx, currentVal, parentVal)
+		pqSwapUnsafe(pq, currentIdx, parentIdx, currentVal, parentVal)
 		currentIdx = parentIdx
 	}
 }
@@ -292,8 +286,8 @@ func pqSiftDown[T any](pq *PriorityQueue[T], idx uint64, less func(a, b T) bool)
 
 		// Check Left
 		if leftIdx < limit {
-			valLeft := ArrayItemGetAtUnsafe[T](pq.data, leftIdx)
-			valSmallest := ArrayItemGetAtUnsafe[T](pq.data, smallestIdx)
+			valLeft := ArrayItemGetAtUnsafeFast(pq.data, pq.dataBase, leftIdx)
+			valSmallest := ArrayItemGetAtUnsafeFast(pq.data, pq.dataBase, smallestIdx)
 			if less(valLeft, valSmallest) {
 				smallestIdx = leftIdx
 			}
@@ -301,8 +295,8 @@ func pqSiftDown[T any](pq *PriorityQueue[T], idx uint64, less func(a, b T) bool)
 
 		// Check Right
 		if rightIdx < limit {
-			valRight := ArrayItemGetAtUnsafe[T](pq.data, rightIdx)
-			valSmallest := ArrayItemGetAtUnsafe[T](pq.data, smallestIdx)
+			valRight := ArrayItemGetAtUnsafeFast(pq.data, pq.dataBase, rightIdx)
+			valSmallest := ArrayItemGetAtUnsafeFast(pq.data, pq.dataBase, smallestIdx)
 			if less(valRight, valSmallest) {
 				smallestIdx = rightIdx
 			}
@@ -314,10 +308,10 @@ func pqSiftDown[T any](pq *PriorityQueue[T], idx uint64, less func(a, b T) bool)
 		}
 
 		// Perform swap
-		valCurrent := ArrayItemGetAtUnsafe[T](pq.data, currentIdx)
-		valSmallest := ArrayItemGetAtUnsafe[T](pq.data, smallestIdx)
+		valCurrent := ArrayItemGetAtUnsafeFast(pq.data, pq.dataBase, currentIdx)
+		valSmallest := ArrayItemGetAtUnsafeFast(pq.data, pq.dataBase, smallestIdx)
 
-		pqSwapUnsafe(pq.data, currentIdx, smallestIdx, valCurrent, valSmallest)
+		pqSwapUnsafe(pq, currentIdx, smallestIdx, valCurrent, valSmallest)
 		currentIdx = smallestIdx
 	}
 }
@@ -327,9 +321,9 @@ func pqSiftDown[T any](pq *PriorityQueue[T], idx uint64, less func(a, b T) bool)
 // but writes them to the opposing indices.
 //
 //go:inline
-func pqSwapUnsafe[T any](data memcore.MarkRaw, idxA, idxB uint64, valA, valB T) {
-	ArraySetAtUnsafe(data, idxA, valB)
-	ArraySetAtUnsafe(data, idxB, valA)
+func pqSwapUnsafe[T any](pq *PriorityQueue[T], idxA, idxB uint64, valA, valB T) {
+	ArraySetAtUnsafeFast(pq.data, pq.dataBase, idxA, valB)
+	ArraySetAtUnsafeFast(pq.data, pq.dataBase, idxB, valA)
 }
 
 // --------------------------------------------------- PRIVATE HELPERS
